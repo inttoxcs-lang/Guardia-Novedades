@@ -47,9 +47,7 @@
     .kpi .k{ font-size:12px; color:var(--muted); font-weight:600; }
     .kpi .v{ margin-top:4px; font-size:22px; font-weight:800; letter-spacing:-.02em; }
     .kpi .h{ margin-top:3px; font-size:11px; color:var(--muted); }
-    .month{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-    @media(min-width:760px){ .month{ grid-template-columns:repeat(4,minmax(0,1fr)); } }
-    @media(min-width:1100px){ .month{ grid-template-columns:repeat(7,minmax(0,1fr)); } }
+
     .day{
       text-align:left; cursor:pointer; padding:0; background:transparent; border:none;
     }
@@ -62,9 +60,9 @@
     .pill.ok{ background:var(--ok-bg); color:var(--ok); border-color:#a7f3d0; }
     .pill.warn{ background:var(--warn-bg); color:var(--warn); border-color:#fde68a; }
     .pill.alert{ background:var(--alert-bg); color:var(--alert); border-color:#fecaca; }
-    .mini{ margin-top:10px; border-top:1px solid #f1f5f9; padding-top:10px; font-size:12px; color:var(--muted); }
-    .mini div{ display:flex; justify-content:space-between; gap:10px; margin:3px 0; }
-    .mini b{ color:var(--text); font-weight:800; }
+
+    .err{ color:var(--alert); font-weight:700; }
+    code{ background:#f1f5f9; padding:2px 6px; border-radius:8px; }
 
     /* Drawer */
     .drawerBack{
@@ -87,8 +85,93 @@
     }
     .tag{ font-size:11px; font-weight:800; color:var(--muted); }
     .val{ font-size:13px; font-weight:800; }
-    .err{ color:var(--alert); font-weight:700; }
-    code{ background:#f1f5f9; padding:2px 6px; border-radius:8px; }
+
+    /* === Vista semanal: 7 tarjetas grandes === */
+    .week{
+      display:grid;
+      gap:14px;
+      grid-template-columns: 1fr;
+    }
+    @media(min-width:760px){
+      .week{ grid-template-columns: repeat(2, minmax(0,1fr)); }
+    }
+    @media(min-width:1100px){
+      .week{ grid-template-columns: repeat(7, minmax(0,1fr)); }
+    }
+
+    .dayBig .card .hd{ padding:18px 18px 0; }
+    .dayBig .card .ttl{ font-size:14px; font-weight:900; }
+    .dayBig .card .st{ font-size:12px; }
+
+    .bigRoutes{
+      display:grid;
+      gap:10px;
+    }
+
+    .bigRouteRow{
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-start;
+      gap:10px;
+      padding:12px 12px;
+      border:1px solid #eef2f7;
+      border-radius:16px;
+      background:#fbfdff;
+    }
+
+    .bigRouteTag{
+      font-size:11px;
+      font-weight:900;
+      letter-spacing:.06em;
+      color:var(--muted);
+    }
+
+    .bigRouteVal{
+      margin-top:4px;
+      font-size:20px;
+      font-weight:950;
+      letter-spacing:-.03em;
+      line-height:1.05;
+      color:var(--text);
+    }
+
+    .bigFlags{
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+      justify-content:flex-end;
+    }
+
+    .bigFlag{
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      border-radius:999px;
+      padding:6px 10px;
+      font-size:12px;
+      font-weight:950;
+      border:1px solid var(--border);
+    }
+
+    .bigFlag.gray{ background:#f1f5f9; color:#334155; border-color:#e2e8f0; }
+    .bigFlag.red{ background:var(--alert-bg); color:var(--alert); border-color:#fecaca; }
+    .bigFlag.warn{ background:var(--warn-bg); color:var(--warn); border-color:#fde68a; }
+
+    .small3{
+      display:grid;
+      grid-template-columns: repeat(3, minmax(0,1fr));
+      gap:10px;
+    }
+
+    .smallBox{
+      padding:10px 10px;
+      border:1px solid #f1f5f9;
+      border-radius:14px;
+      background:#ffffff;
+    }
+
+    .smallBox .k{ font-size:11px; color:var(--muted); font-weight:900; }
+    .smallBox .v{ margin-top:2px; font-size:16px; font-weight:950; color:var(--text); }
   </style>
 </head>
 
@@ -97,7 +180,7 @@
     <header>
       <div>
         <h1>INFO SERV</h1>
-        <div class="sub">Tablero operativo conectado a Google Sheets (Calendario + KPIs).</div>
+        <div class="sub">Tablero operativo conectado a Google Sheets (Semana: 7 tarjetas grandes).</div>
       </div>
       <div class="meta" id="meta">—</div>
     </header>
@@ -124,11 +207,11 @@
 
       <section class="card">
         <div class="hd">
-          <div class="ttl">Calendario Operativo</div>
-          <div class="st">Click en un día para ver detalle.</div>
+          <div class="ttl">Semana operativa (últimos 7 días del Sheet)</div>
+          <div class="st">Click en un día para ver detalle completo.</div>
         </div>
         <div class="bd">
-          <div class="month" id="month"></div>
+          <div class="week" id="week"></div>
           <div id="calError" class="err" style="display:none; margin-top:10px;"></div>
 
           <!-- DEBUG -->
@@ -151,7 +234,7 @@
           Este HTML consume:<br/>
           <code id="csvUrl"></code>
           <div style="margin-top:10px;">
-            Si falla la carga, revisá permisos del Sheet (compartido/público) y el <code>gid</code> correcto.
+            Si falta info, revisá: permisos del Sheet y <code>gid</code> correcto de la pestaña.
           </div>
         </div>
       </section>
@@ -211,13 +294,11 @@ function asValue(s){
   return t;
 }
 
-/** === MATRIX -> DAY RECORDS (CORREGIDO: NO RECORTA COLUMNAS) === */
+/** === MATRIX -> DAY RECORDS (NO RECORTA COLUMNAS) === */
 function matrixFromCSV(csvText){
   const grid = parseCSV(csvText).filter(r => r.some(c => (c ?? "").trim() !== ""));
   if (grid.length < 2) throw new Error("El CSV está vacío o no tiene filas suficientes.");
 
-  // Header: NO filtramos vacíos para no recortar columnas.
-  // Generamos nombres para columnas vacías => COL_1, COL_2, ...
   const header = grid[0];
   const rawHeaders = header.slice(1).map(s => (s ?? "").trim());
   const cols = rawHeaders.length;
@@ -229,8 +310,6 @@ function matrixFromCSV(csvText){
     const label = (grid[r][0] ?? "").trim();
     if (!label) continue;
 
-    // Tomamos exactamente la misma cantidad de columnas que el header.
-    // Si la fila viene más corta, completamos con null para no desalinear.
     const slice = grid[r].slice(1, 1 + cols);
     const padded = slice.concat(Array(Math.max(0, cols - slice.length)).fill(""));
     rows.push({ label, values: padded.map(asValue) });
@@ -240,7 +319,6 @@ function matrixFromCSV(csvText){
 }
 
 function toDayRecords(matrix){
-  // Siempre devuelve la misma cantidad de "días/columnas" que el header.
   return matrix.dates.map((d, idx) => {
     const items = {};
     for (const row of matrix.rows) items[row.label] = row.values[idx] ?? null;
@@ -289,7 +367,6 @@ function computeKPIs(days){
 const elMeta = document.getElementById("meta");
 const elUpdated = document.getElementById("updatedAt");
 const elKpis = document.getElementById("kpis");
-const elMonth = document.getElementById("month");
 const elKpiError = document.getElementById("kpiError");
 const elCalError = document.getElementById("calError");
 
@@ -330,28 +407,44 @@ function renderKPIs(){
   }
 }
 
+/** === Vista semanal: últimos 7 días (prioriza Línea TM / Línea TT / Cortado) === */
 function renderCalendar(){
   const f = (filterInput.value || "").trim().toLowerCase();
-  elMonth.innerHTML = "";
+
+  const elWeek = document.getElementById("week");
+  if (!elWeek) return;
+  elWeek.innerHTML = "";
 
   const filtered = !f ? STATE.days : STATE.days.filter(d => {
     const hay = Object.entries(d.items).map(([k,v]) => `${k}:${v ?? ""}`.toLowerCase()).join(" | ");
     return hay.includes(f) || String(d.date).toLowerCase().includes(f);
   });
 
-  for (const d of filtered){
+  const last7 = filtered.slice(Math.max(0, filtered.length - 7));
+
+  for (const d of last7){
     const tone = toneForDay(d);
     const pillClass = tone === "ok" ? "ok" : tone === "warn" ? "warn" : "alert";
     const pillText  = tone === "ok" ? "OK" : tone === "warn" ? "ATENCIÓN" : "ALERTA";
 
+    const lineaTM = d.items["Linea TM"];
+    const lineaTT = d.items["Linea TT"];
+    const cortado = d.items["Cortado"];
+    const refuerzo = d.items["Refuerzo"];
+    const especiales = d.items["Especiales"];
+
+    const cortadoNum = (typeof cortado === "number") ? cortado : (cortado ? 1 : 0);
+    const cortadoOn = cortadoNum > 0;
+
+    const refNum = (typeof refuerzo === "number") ? refuerzo : (refuerzo ? 1 : 0);
+    const espNum = (typeof especiales === "number") ? especiales : (especiales ? 1 : 0);
+
     const citTM = d.items["Conductores citados TM"];
     const inasTM = d.items["Inasistencias TM"];
-    const relTM = d.items["Relevantes citados TM"];
-    const citTT = d.items["Conductores citados TT"];
     const relTT = d.items["Relevantes guardia TT"];
 
     const btn = document.createElement("button");
-    btn.className = "day";
+    btn.className = "day dayBig";
     btn.onclick = () => openDetail(d);
 
     btn.innerHTML = `
@@ -361,22 +454,62 @@ function renderCalendar(){
             <div class="ttl">${escapeHtml(d.date)}</div>
             <span class="pill ${pillClass}">${pillText}</span>
           </div>
-          <div class="st">Resumen del día</div>
+          <div class="st">Operación del día</div>
         </div>
+
         <div class="bd">
-          <div class="mini">
-            <div><span>Citados TM</span><b>${escapeHtml(String(citTM ?? "-"))}</b></div>
-            <div><span>Inasist. TM</span><b>${escapeHtml(String(inasTM ?? "-"))}</b></div>
-            <div><span>Relev. TM</span><b>${escapeHtml(String(relTM ?? "-"))}</b></div>
-          </div>
-          <div class="mini">
-            <div><span>Citados TT</span><b>${escapeHtml(String(citTT ?? "-"))}</b></div>
-            <div><span>Relev. TT</span><b>${escapeHtml(String(relTT ?? "-"))}</b></div>
+          <div class="bigRoutes">
+
+            <div class="bigRouteRow">
+              <div>
+                <div class="bigRouteTag">LÍNEA TM</div>
+                <div class="bigRouteVal">${escapeHtml(String(lineaTM ?? "-"))}</div>
+              </div>
+              <div class="bigFlags">
+                <span class="bigFlag gray">TM</span>
+              </div>
+            </div>
+
+            <div class="bigRouteRow">
+              <div>
+                <div class="bigRouteTag">LÍNEA TT</div>
+                <div class="bigRouteVal">${escapeHtml(String(lineaTT ?? "-"))}</div>
+              </div>
+              <div class="bigFlags">
+                <span class="bigFlag gray">TT</span>
+              </div>
+            </div>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px;">
+              <div class="bigRouteTag">CORTADO / EVENTOS</div>
+              <div class="bigFlags">
+                ${cortadoOn ? `<span class="bigFlag red">CORTADO</span>` : `<span class="bigFlag gray">OK</span>`}
+                ${refNum > 0 ? `<span class="bigFlag warn">REFUERZO</span>` : ``}
+                ${espNum > 0 ? `<span class="bigFlag warn">ESPECIALES</span>` : ``}
+              </div>
+            </div>
+
+            <div class="small3">
+              <div class="smallBox">
+                <div class="k">Citados TM</div>
+                <div class="v">${escapeHtml(String(citTM ?? "-"))}</div>
+              </div>
+              <div class="smallBox">
+                <div class="k">Inasist. TM</div>
+                <div class="v">${escapeHtml(String(inasTM ?? "-"))}</div>
+              </div>
+              <div class="smallBox">
+                <div class="k">Relev. TT</div>
+                <div class="v">${escapeHtml(String(relTT ?? "-"))}</div>
+              </div>
+            </div>
+
           </div>
         </div>
       </div>
     `;
-    elMonth.appendChild(btn);
+
+    elWeek.appendChild(btn);
   }
 }
 
@@ -386,9 +519,10 @@ function openDetail(day){
   body.innerHTML = "";
 
   const preferred = [
-    "Linea TM","Cortado","Refuerzo","Especiales","Francos trabajados",
+    "Linea TM","Linea TT","Cortado",
+    "Refuerzo","Especiales","Francos trabajados",
     "Conductores citados TM","Inasistencias TM","Relevantes citados TM","Inasistencia relevantes","Salida último servicio TM",
-    "Linea TT","Conductores citados TT","Relevantes guardia TT","Legajos inasistencias",
+    "Conductores citados TT","Relevantes guardia TT","Legajos inasistencias",
   ];
   const keys = Object.keys(day.items);
   const ordered = [...preferred.filter(k => keys.includes(k)), ...keys.filter(k => !preferred.includes(k))];
@@ -416,7 +550,8 @@ function render(){
 function escapeHtml(s){
   return (s ?? "").toString()
     .replaceAll("&","&amp;").replaceAll("<","&lt;")
-    .replaceAll(">","&gt;").replaceAll('"',"&quot;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
     .replaceAll("'","&#039;");
 }
 
