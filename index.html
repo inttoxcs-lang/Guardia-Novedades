@@ -1,14 +1,443 @@
-
 <!doctype html>
-<html lang="en">
+<html lang="es">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Simple Pong</title>
-  <link rel="stylesheet" href="styles.css" />
+  <title>INFO SERV | Dashboard</title>
+  <style>
+    :root{
+      --bg:#fafafa; --card:#fff; --border:#e5e7eb; --text:#0f172a; --muted:#64748b;
+      --ok-bg:#ecfdf5; --ok:#047857; --warn-bg:#fffbeb; --warn:#b45309; --alert-bg:#fef2f2; --alert:#b91c1c;
+      --shadow: 0 1px 2px rgba(0,0,0,.05);
+      --radius:16px;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+    }
+    body{ margin:0; background:var(--bg); color:var(--text); }
+    .wrap{ max-width:1200px; margin:0 auto; padding:28px 16px 60px; }
+    header{ display:flex; align-items:flex-end; justify-content:space-between; gap:16px; }
+    h1{ margin:0; font-size:22px; letter-spacing:-.02em; }
+    .sub{ margin-top:6px; font-size:13px; color:var(--muted); }
+    .meta{ font-size:12px; color:var(--muted); text-align:right; }
+    .row{ display:flex; gap:12px; flex-wrap:wrap; align-items:center; justify-content:space-between; margin-top:18px; }
+    .input{
+      flex:1; min-width:240px; max-width:520px;
+      background:#fff; border:1px solid var(--border); border-radius:12px;
+      padding:10px 12px; font-size:14px; outline:none;
+    }
+    .btn{
+      border:1px solid var(--border); background:#fff; color:var(--text);
+      border-radius:12px; padding:10px 12px; font-size:14px; cursor:pointer;
+      box-shadow:var(--shadow);
+    }
+    .btn.primary{ background:#0f172a; color:#fff; border-color:#0f172a; }
+    .grid{ display:grid; gap:14px; margin-top:14px; }
+    .card{
+      background:var(--card); border:1px solid var(--border); border-radius:var(--radius);
+      box-shadow:var(--shadow);
+    }
+    .card .hd{ padding:16px 18px 0; }
+    .card .ttl{ font-size:13px; font-weight:700; }
+    .card .st{ margin-top:4px; font-size:12px; color:var(--muted); }
+    .card .bd{ padding:14px 18px 18px; }
+    .kpis{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+    @media(min-width:900px){ .kpis{ grid-template-columns:repeat(5,minmax(0,1fr)); } }
+    .kpi{
+      border:1px solid var(--border); background:#f4f4f5; border-radius:14px; padding:12px;
+    }
+    .kpi .k{ font-size:12px; color:var(--muted); font-weight:600; }
+    .kpi .v{ margin-top:4px; font-size:22px; font-weight:800; letter-spacing:-.02em; }
+    .kpi .h{ margin-top:3px; font-size:11px; color:var(--muted); }
+    .month{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    @media(min-width:760px){ .month{ grid-template-columns:repeat(4,minmax(0,1fr)); } }
+    @media(min-width:1100px){ .month{ grid-template-columns:repeat(7,minmax(0,1fr)); } }
+    .day{
+      text-align:left; cursor:pointer; padding:0; background:transparent; border:none;
+    }
+    .day .card{ transition: .15s; }
+    .day:hover .card{ border-color:#cbd5e1; box-shadow:0 6px 18px rgba(0,0,0,.06); }
+    .pill{
+      display:inline-flex; align-items:center; gap:6px;
+      font-size:11px; font-weight:700; border-radius:999px; padding:4px 10px; border:1px solid var(--border);
+    }
+    .pill.ok{ background:var(--ok-bg); color:var(--ok); border-color:#a7f3d0; }
+    .pill.warn{ background:var(--warn-bg); color:var(--warn); border-color:#fde68a; }
+    .pill.alert{ background:var(--alert-bg); color:var(--alert); border-color:#fecaca; }
+    .mini{ margin-top:10px; border-top:1px solid #f1f5f9; padding-top:10px; font-size:12px; color:var(--muted); }
+    .mini div{ display:flex; justify-content:space-between; gap:10px; margin:3px 0; }
+    .mini b{ color:var(--text); font-weight:800; }
+
+    /* Drawer */
+    .drawerBack{
+      position:fixed; inset:0; background:rgba(0,0,0,.3);
+      opacity:0; pointer-events:none; transition:.2s;
+    }
+    .drawer{
+      position:fixed; top:0; right:0; height:100%; width:min(520px, 100%);
+      background:#fff; transform:translateX(100%); transition:.2s;
+      box-shadow:-8px 0 30px rgba(0,0,0,.12);
+      display:flex; flex-direction:column;
+    }
+    .drawer.open{ transform:translateX(0); }
+    .drawerBack.open{ opacity:1; pointer-events:auto; }
+    .drawerHd{ display:flex; justify-content:space-between; align-items:center; padding:14px 16px; border-bottom:1px solid var(--border); }
+    .drawerBd{ padding:16px; overflow:auto; flex:1; }
+    .rowItem{
+      display:flex; justify-content:space-between; align-items:center; gap:10px;
+      padding:10px 12px; border:1px solid var(--border); border-radius:12px; margin-bottom:8px;
+    }
+    .tag{ font-size:11px; font-weight:800; color:var(--muted); }
+    .val{ font-size:13px; font-weight:800; }
+    .err{ color:var(--alert); font-weight:700; }
+    code{ background:#f1f5f9; padding:2px 6px; border-radius:8px; }
+  </style>
 </head>
+
 <body>
-  <canvas id="game" width="800" height="500"></canvas>
-  <script src="script.js"></script>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>INFO SERV</h1>
+        <div class="sub">Tablero operativo conectado a Google Sheets (Calendario + KPIs).</div>
+      </div>
+      <div class="meta" id="meta">—</div>
+    </header>
+
+    <div class="row">
+      <input id="filter" class="input" placeholder="Filtrar por texto (ej: inasistencias, 07/02, 7:35…)" />
+      <div style="display:flex; gap:10px;">
+        <button class="btn" id="clear">Limpiar</button>
+        <button class="btn primary" id="reload">Actualizar</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <div class="hd">
+          <div class="ttl">KPIs del mes</div>
+          <div class="st" id="updatedAt">—</div>
+        </div>
+        <div class="bd">
+          <div class="kpis" id="kpis"></div>
+          <div id="kpiError" class="err" style="display:none; margin-top:10px;"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="hd">
+          <div class="ttl">Calendario Operativo</div>
+          <div class="st">Click en un día para ver detalle.</div>
+        </div>
+        <div class="bd">
+          <div class="month" id="month"></div>
+          <div id="calError" class="err" style="display:none; margin-top:10px;"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="hd">
+          <div class="ttl">Configuración</div>
+          <div class="st">Fuente CSV pública de Google Sheets.</div>
+        </div>
+        <div class="bd" style="font-size:13px; color:var(--muted); line-height:1.6;">
+          Este HTML consume:<br/>
+          <code id="csvUrl"></code>
+          <div style="margin-top:10px;">
+            Si falla la carga, revisá permisos del Sheet (compartido/público) y el <code>gid</code> correcto.
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Drawer -->
+  <div class="drawerBack" id="drawerBack"></div>
+  <aside class="drawer" id="drawer">
+    <div class="drawerHd">
+      <div style="font-weight:800; font-size:13px;" id="drawerTitle">Detalle</div>
+      <button class="btn" id="closeDrawer">Cerrar</button>
+    </div>
+    <div class="drawerBd" id="drawerBody"></div>
+  </aside>
+
+<script>
+/** === CONFIG === */
+const SHEET_ID = "120WSaF1Zu6h4-Edid-Yc7GIWKwtQB61GQ3rNexH-MXc"; // de tu URL
+const GID = "0"; // si la pestaña "Externos" NO es la primera, cambiá este valor
+const CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${encodeURIComponent(GID)}`;
+document.getElementById("csvUrl").textContent = CSV_URL;
+
+/** === CSV PARSER (simple, soporta comillas) === */
+function parseCSV(text){
+  const rows = [];
+  let row = [];
+  let cur = "";
+  let inQuotes = false;
+
+  for (let i=0; i<text.length; i++){
+    const ch = text[i];
+    if (inQuotes){
+      if (ch === '"'){
+        if (text[i+1] === '"'){ cur += '"'; i++; }
+        else inQuotes = false;
+      } else cur += ch;
+      continue;
+    }
+    if (ch === '"'){ inQuotes = true; continue; }
+    if (ch === ","){ row.push(cur); cur=""; continue; }
+    if (ch === "\n"){ row.push(cur.replace(/\r$/, "")); rows.push(row); row=[]; cur=""; continue; }
+    cur += ch;
+  }
+  row.push(cur.replace(/\r$/, ""));
+  rows.push(row);
+  return rows;
+}
+
+function asValue(s){
+  const t = (s ?? "").toString().trim();
+  if (!t) return null;
+  if (/^\d{1,2}:\d{2}$/.test(t)) return t; // hora
+  const normalized = t.replace(",", ".");
+  const n = Number(normalized);
+  if (!Number.isNaN(n) && /^-?\d+(\.\d+)?$/.test(normalized)) return n;
+  return t;
+}
+
+/** === MATRIX -> DAY RECORDS === */
+function matrixFromCSV(csvText){
+  const grid = parseCSV(csvText).filter(r => r.some(c => (c ?? "").trim() !== ""));
+  if (grid.length < 2) throw new Error("El CSV está vacío o no tiene filas suficientes.");
+
+  const header = grid[0];
+  const dates = header.slice(1).map(s => (s ?? "").trim()).filter(Boolean);
+
+  const rows = [];
+  for (let r=1; r<grid.length; r++){
+    const label = (grid[r][0] ?? "").trim();
+    if (!label) continue;
+    const rawVals = grid[r].slice(1, 1 + dates.length);
+    rows.push({ label, values: rawVals.map(asValue) });
+  }
+  return { dates, rows };
+}
+
+function toDayRecords(matrix){
+  return matrix.dates.map((d, idx) => {
+    const items = {};
+    for (const row of matrix.rows) items[row.label] = row.values[idx] ?? null;
+    return { date: d, items };
+  });
+}
+
+/** === KPIs === */
+function sum(vals){
+  return vals.reduce((acc,v)=> typeof v === "number" ? acc+v : acc, 0);
+}
+function computeKPIs(days){
+  const getRow = (key) => days.map(d => d.items[key] ?? null);
+
+  const citTM = sum(getRow("Conductores citados TM"));
+  const inasTM = sum(getRow("Inasistencias TM"));
+  const relTM = sum(getRow("Relevantes citados TM"));
+
+  const citTT = sum(getRow("Conductores citados TT"));
+  const relTT = sum(getRow("Relevantes guardia TT"));
+
+  const refuerzo = sum(getRow("Refuerzo"));
+  const especiales = sum(getRow("Especiales"));
+  const cortado = sum(getRow("Cortado"));
+
+  const incidentDays = days.filter(d => {
+    const inas = d.items["Inasistencias TM"];
+    const ref = d.items["Refuerzo"];
+    return (typeof inas === "number" && inas > 0) || (typeof ref === "number" && ref > 0);
+  }).length;
+
+  return [
+    { label:"Citados TM", value: citTM, hint:"Suma mensual (Conductores citados TM)" },
+    { label:"Inasistencias TM", value: inasTM, hint:"Suma mensual (Inasistencias TM)" },
+    { label:"Relevantes TM", value: relTM, hint:"Suma mensual (Relevantes citados TM)" },
+    { label:"Citados TT", value: citTT, hint:"Suma mensual (Conductores citados TT)" },
+    { label:"Relevantes guardia TT", value: relTT, hint:"Suma mensual (Relevantes guardia TT)" },
+    { label:"Refuerzos", value: refuerzo, hint:"Suma mensual (Refuerzo)" },
+    { label:"Especiales", value: especiales, hint:"Suma mensual (Especiales)" },
+    { label:"Cortados", value: cortado, hint:"Suma mensual (Cortado)" },
+    { label:"Días con incidentes", value: incidentDays, hint:"Inasistencias TM > 0 o Refuerzo > 0" },
+  ];
+}
+
+/** === UI RENDER === */
+const elMeta = document.getElementById("meta");
+const elUpdated = document.getElementById("updatedAt");
+const elKpis = document.getElementById("kpis");
+const elMonth = document.getElementById("month");
+const elKpiError = document.getElementById("kpiError");
+const elCalError = document.getElementById("calError");
+
+const filterInput = document.getElementById("filter");
+document.getElementById("clear").onclick = () => { filterInput.value=""; render(); };
+document.getElementById("reload").onclick = () => load();
+
+const drawer = document.getElementById("drawer");
+const drawerBack = document.getElementById("drawerBack");
+const closeDrawer = () => {
+  drawer.classList.remove("open");
+  drawerBack.classList.remove("open");
+};
+document.getElementById("closeDrawer").onclick = closeDrawer;
+drawerBack.onclick = closeDrawer;
+
+let STATE = { days: [], kpis: [], updatedAt: null };
+
+function toneForDay(day){
+  const inas = day.items["Inasistencias TM"];
+  const ref = day.items["Refuerzo"];
+  if (typeof inas === "number" && inas > 0) return "alert";
+  if (typeof ref === "number" && ref > 0) return "warn";
+  return "ok";
+}
+
+function renderKPIs(){
+  elKpis.innerHTML = "";
+  for (const k of STATE.kpis){
+    const div = document.createElement("div");
+    div.className = "kpi";
+    div.innerHTML = `
+      <div class="k">${escapeHtml(k.label)}</div>
+      <div class="v">${escapeHtml(String(k.value))}</div>
+      <div class="h">${escapeHtml(k.hint || "")}</div>
+    `;
+    elKpis.appendChild(div);
+  }
+}
+
+function renderCalendar(){
+  const f = (filterInput.value || "").trim().toLowerCase();
+  elMonth.innerHTML = "";
+
+  const filtered = !f ? STATE.days : STATE.days.filter(d => {
+    const hay = Object.entries(d.items).map(([k,v]) => `${k}:${v ?? ""}`.toLowerCase()).join(" | ");
+    return hay.includes(f) || String(d.date).toLowerCase().includes(f);
+  });
+
+  for (const d of filtered){
+    const tone = toneForDay(d);
+    const pillClass = tone === "ok" ? "ok" : tone === "warn" ? "warn" : "alert";
+    const pillText  = tone === "ok" ? "OK" : tone === "warn" ? "ATENCIÓN" : "ALERTA";
+
+    const citTM = d.items["Conductores citados TM"];
+    const inasTM = d.items["Inasistencias TM"];
+    const relTM = d.items["Relevantes citados TM"];
+    const citTT = d.items["Conductores citados TT"];
+    const relTT = d.items["Relevantes guardia TT"];
+
+    const btn = document.createElement("button");
+    btn.className = "day";
+    btn.onclick = () => openDetail(d);
+
+    btn.innerHTML = `
+      <div class="card">
+        <div class="hd">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div class="ttl">${escapeHtml(d.date)}</div>
+            <span class="pill ${pillClass}">${pillText}</span>
+          </div>
+          <div class="st">Resumen del día</div>
+        </div>
+        <div class="bd">
+          <div class="mini">
+            <div><span>Citados TM</span><b>${escapeHtml(String(citTM ?? "-"))}</b></div>
+            <div><span>Inasist. TM</span><b>${escapeHtml(String(inasTM ?? "-"))}</b></div>
+            <div><span>Relev. TM</span><b>${escapeHtml(String(relTM ?? "-"))}</b></div>
+          </div>
+          <div class="mini">
+            <div><span>Citados TT</span><b>${escapeHtml(String(citTT ?? "-"))}</b></div>
+            <div><span>Relev. TT</span><b>${escapeHtml(String(relTT ?? "-"))}</b></div>
+          </div>
+        </div>
+      </div>
+    `;
+    elMonth.appendChild(btn);
+  }
+}
+
+function openDetail(day){
+  document.getElementById("drawerTitle").textContent = `Detalle ${day.date}`;
+  const body = document.getElementById("drawerBody");
+  body.innerHTML = "";
+
+  // orden sugerido (si no existe una clave, se salta)
+  const preferred = [
+    "Linea TM","Cortado","Refuerzo","Especiales","Francos trabajados",
+    "Conductores citados TM","Inasistencias TM","Relevantes citados TM","Inasistencia relevantes","Salida último servicio TM",
+    "Linea TT","Conductores citados TT","Relevantes guardia TT","Legajos inasistencias",
+  ];
+  const keys = Object.keys(day.items);
+  const ordered = [...preferred.filter(k => keys.includes(k)), ...keys.filter(k => !preferred.includes(k))];
+
+  for (const k of ordered){
+    const item = document.createElement("div");
+    item.className = "rowItem";
+    item.innerHTML = `
+      <div class="tag">${escapeHtml(k)}</div>
+      <div class="val">${escapeHtml(String(day.items[k] ?? "-"))}</div>
+    `;
+    body.appendChild(item);
+  }
+
+  drawer.classList.add("open");
+  drawerBack.classList.add("open");
+}
+
+function render(){
+  renderKPIs();
+  renderCalendar();
+}
+
+function escapeHtml(s){
+  return (s ?? "").toString()
+    .replaceAll("&","&amp;").replaceAll("<","&lt;")
+    .replaceAll(">","&gt;").replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
+
+/** === LOAD === */
+async function load(){
+  elKpiError.style.display = "none";
+  elCalError.style.display = "none";
+  elMeta.textContent = "Cargando…";
+  elUpdated.textContent = "—";
+
+  try{
+    // cache-buster para evitar cache del navegador
+    const res = await fetch(CSV_URL + "&_=" + Date.now());
+    if (!res.ok) throw new Error(`HTTP ${res.status} al leer el CSV`);
+    const csv = await res.text();
+
+    const matrix = matrixFromCSV(csv);
+    const days = toDayRecords(matrix);
+    const kpis = computeKPIs(days);
+
+    STATE.days = days;
+    STATE.kpis = kpis;
+    STATE.updatedAt = new Date();
+
+    elMeta.textContent = `Fuente: Google Sheets · Actualizado: ${STATE.updatedAt.toLocaleString("es-AR")}`;
+    elUpdated.textContent = `Actualizado: ${STATE.updatedAt.toLocaleString("es-AR")}`;
+
+    render();
+  }catch(err){
+    const msg = (err && err.message) ? err.message : "Error desconocido";
+    elMeta.textContent = "Error de carga";
+    elKpiError.textContent = msg;
+    elCalError.textContent = msg;
+    elKpiError.style.display = "block";
+    elCalError.style.display = "block";
+    console.error(err);
+  }
+}
+
+filterInput.addEventListener("input", () => renderCalendar());
+load();
+</script>
 </body>
 </html>
