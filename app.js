@@ -86,19 +86,17 @@
   function parseNumber(value) {
     const s = String(value ?? "").trim();
     if (!s) return 0;
-    if (/^\d{1,2}:\d{2}$/.test(s)) return 0; // horas no cuentan
+    if (/^\d{1,2}:\d{2}$/.test(s)) return 0;
     const m = s.match(/-?\d+(?:[.,]\d+)?/);
     if (!m) return 0;
     const n = Number(m[0].replace(",", "."));
     return Number.isFinite(n) ? n : 0;
   }
 
+  // ✅ extractor robusto: agarra TODOS los números (>=3 dígitos) aunque haya texto/símbolos
   function extractLegajos(value) {
-    // tokens numéricos (>=3 dígitos)
-    return String(value ?? "")
-      .split(/[\s,;|]+/)
-      .map(v => v.trim())
-      .filter(v => /^\d{3,}$/.test(v));
+    const matches = String(value ?? "").match(/\d{3,}/g);
+    return matches ? matches : [];
   }
 
   function uniqueSortLegajos(legajos) {
@@ -111,8 +109,15 @@
     const n = normalize(metricName);
     if (n === "linea tm") return true;
     if (n === "linea tt") return true;
+
+    // oculta filas de legajos (si existieran nombradas)
     if (n.includes("legajo") && n.includes("inasist")) return true;
-    if (n === "inasistencias tm") return true; // queda solo KPI
+    if (n === "legajo" || n === "legajos") return true;
+
+    // queda solo KPI
+    if (n === "inasistencias tm") return true;
+    if (n === "inasistencias tt") return true;
+
     return false;
   }
 
@@ -202,12 +207,14 @@
       let legajos = [];
       const table = [];
 
+      // acumulador por si hay varios bloques (TM + TT, etc.)
+      const legajosAcc = [];
+
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i] || [];
         const name = String(row[mCol] ?? "").trim();
         const val = String(row[c] ?? "").trim();
 
-        // si no hay métrica, no es fila principal
         if (!name) continue;
 
         const n = normalize(name);
@@ -216,54 +223,50 @@
         if (n === "linea tm" || n.includes("linea tm")) lineaTM = val || "—";
         if (n === "linea tt" || n.includes("linea tt")) lineaTT = val || "—";
 
-        // fila explícita de legajos (si existiera)
+        // Si existe fila explícita con legajos
         if (n.includes("legajo") && n.includes("inasist")) {
-          legajos = extractLegajos(val);
+          legajosAcc.push(...extractLegajos(val));
         }
 
-        // ✅ FIX ROBUSTO: "Inasistencias TM" y legajos debajo (aunque estén más abajo)
-        if (n === "inasistencias tm") {
-          const expected = parseNumber(val); // cantidad, puede ayudar pero no limita
+        // ✅ BLOQUE Inasistencias TM o TT: leer legajos debajo aunque haya filas "Legajo" / vacías
+        if (n === "inasistencias tm" || n === "inasistencias tt") {
+          const expected = parseNumber(val); // no limita, solo referencia
+          void expected;
 
-          const collected = [];
           let j = i + 1;
-
-          // Recorre TODO lo que venga debajo hasta la próxima métrica "real"
           while (j < rows.length) {
-            const nextName = String(rows[j]?.[mCol] ?? "").trim();
+            const nextNameRaw = String(rows[j]?.[mCol] ?? "");
+            const nextName = nextNameRaw.trim();
+            const nextN = normalize(nextName);
             const nextVal = String(rows[j]?.[c] ?? "").trim();
 
-            // Si aparece otra métrica real (texto), corta.
-            // OJO: hay sheets que ponen números en la columna de métrica por error,
-            // por eso evitamos cortar si nextName es solo dígitos.
-            if (nextName && !/^\d+$/.test(nextName)) break;
+            // Cortar SOLO cuando aparezca una métrica real (no legajo/legajos y no vacío)
+            // Ojo: si nextName es "Legajo" o "Legajos", seguimos.
+            if (nextName) {
+              const isLegajoRow =
+                nextN === "legajo" ||
+                nextN === "legajos" ||
+                (nextN.includes("legajo") && !nextN.includes("linea"));
 
-            // Acumula cualquier legajo numérico encontrado en el valor del día
-            if (nextVal) collected.push(...extractLegajos(nextVal));
+              if (!isLegajoRow) break;
+            }
+
+            // Acumular legajos del valor del día (aunque la fila tenga nombre o no)
+            legajosAcc.push(...extractLegajos(nextVal));
 
             j++;
           }
 
-          // Si el sheet dice que hay inasistencias, pero no encontramos nada, queda vacío.
-          // (si querés mostrar "—" explícito, se hace en render)
-          if (expected > 0 && collected.length) {
-            legajos = collected;
-          } else if (collected.length) {
-            // aunque expected sea 0, si hay legajos, los tomamos
-            legajos = collected;
-          }
-
-          // saltar las filas consumidas
-          i = j - 1;
+          i = j - 1; // saltar filas consumidas
         }
 
-        // Tabla: todo excepto lo que pediste ocultar
+        // Tabla: todo excepto lo oculto
         if (!shouldHideInTable(name)) {
           table.push({ name, val });
         }
       }
 
-      legajos = uniqueSortLegajos(legajos);
+      legajos = uniqueSortLegajos(legajosAcc);
 
       return { date: d, lineaTM, lineaTT, legajos, table };
     });
