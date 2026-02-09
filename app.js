@@ -94,6 +94,7 @@
   }
 
   function extractLegajos(value) {
+    // tokens numéricos (>=3 dígitos)
     return String(value ?? "")
       .split(/[\s,;|]+/)
       .map(v => v.trim())
@@ -116,7 +117,7 @@
   }
 
   // =========================
-  // CSV PARSER (REAL)
+  // CSV PARSER (robusto con comillas/comas)
   // =========================
   function parseCsvToMatrix(text) {
     const rows = [];
@@ -169,7 +170,6 @@
     const res = await fetch(url, { cache: "no-store" });
     const text = await res.text();
 
-    // Si Google devuelve HTML, está bloqueado por permisos/publicación
     if (!res.ok || text.trim().startsWith("<")) {
       throw new Error("No se pudo leer el Sheet. Asegurate que esté publicado o público.");
     }
@@ -177,7 +177,7 @@
   }
 
   // =========================
-  // BUILD CARDS
+  // BUILD CARDS (KPIs + tabla + legajos completos)
   // =========================
   function buildCards(matrix, headerRow1, metricCol1) {
     const h = headerRow1 - 1;
@@ -207,40 +207,57 @@
         const name = String(row[mCol] ?? "").trim();
         const val = String(row[c] ?? "").trim();
 
-        // Ojo: en tu sheet hay filas de legajos con el "name" vacío.
+        // si no hay métrica, no es fila principal
         if (!name) continue;
 
         const n = normalize(name);
 
+        // KPIs TM / TT
         if (n === "linea tm" || n.includes("linea tm")) lineaTM = val || "—";
         if (n === "linea tt" || n.includes("linea tt")) lineaTT = val || "—";
 
-        // Si existe fila explícita de legajos
+        // fila explícita de legajos (si existiera)
         if (n.includes("legajo") && n.includes("inasist")) {
           legajos = extractLegajos(val);
         }
 
-        // ✅ Caso real: "Inasistencias TM" y luego legajos en filas siguientes sin nombre
+        // ✅ FIX ROBUSTO: "Inasistencias TM" y legajos debajo (aunque estén más abajo)
         if (n === "inasistencias tm") {
-          const expected = parseNumber(val); // ej 3
-          const collected = [];
+          const expected = parseNumber(val); // cantidad, puede ayudar pero no limita
 
+          const collected = [];
           let j = i + 1;
+
+          // Recorre TODO lo que venga debajo hasta la próxima métrica "real"
           while (j < rows.length) {
             const nextName = String(rows[j]?.[mCol] ?? "").trim();
             const nextVal = String(rows[j]?.[c] ?? "").trim();
-            if (nextName) break;
-            collected.push(...extractLegajos(nextVal));
+
+            // Si aparece otra métrica real (texto), corta.
+            // OJO: hay sheets que ponen números en la columna de métrica por error,
+            // por eso evitamos cortar si nextName es solo dígitos.
+            if (nextName && !/^\d+$/.test(nextName)) break;
+
+            // Acumula cualquier legajo numérico encontrado en el valor del día
+            if (nextVal) collected.push(...extractLegajos(nextVal));
+
             j++;
           }
 
+          // Si el sheet dice que hay inasistencias, pero no encontramos nada, queda vacío.
+          // (si querés mostrar "—" explícito, se hace en render)
           if (expected > 0 && collected.length) {
+            legajos = collected;
+          } else if (collected.length) {
+            // aunque expected sea 0, si hay legajos, los tomamos
             legajos = collected;
           }
 
+          // saltar las filas consumidas
           i = j - 1;
         }
 
+        // Tabla: todo excepto lo que pediste ocultar
         if (!shouldHideInTable(name)) {
           table.push({ name, val });
         }
@@ -347,7 +364,6 @@
       render();
     } catch (err) {
       console.error(err);
-      // Si querés, acá podemos mostrar un mensaje en pantalla, pero vos pediste sin banners.
       if (cardsGrid) cardsGrid.innerHTML = "";
     } finally {
       isLoading = false;
