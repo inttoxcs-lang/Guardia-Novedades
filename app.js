@@ -55,11 +55,40 @@
       .trim();
   }
 
+  function parseNumber(value) {
+    const s = String(value ?? "").trim();
+    if (!s) return 0;
+    if (/^\d{1,2}:\d{2}$/.test(s)) return 0; // evita horas
+    const m = s.match(/-?\d+(?:[.,]\d+)?/);
+    if (!m) return 0;
+    const n = Number(m[0].replace(",", "."));
+    return Number.isFinite(n) ? n : 0;
+  }
+
   function extractLegajos(value) {
+    // captura números (>=3 dígitos)
     return String(value ?? "")
       .split(/[\s,;|]+/)
       .map(v => v.trim())
       .filter(v => /^\d{3,}$/.test(v));
+  }
+
+  function uniqueSortLegajos(legajos) {
+    // 1) normaliza a string, 2) quita duplicados, 3) orden numérico
+    const uniq = Array.from(new Set((legajos || []).map(String)));
+
+    // sort numérico: si alguno no es numérico, lo manda al final por string
+    return uniq.sort((a, b) => {
+      const na = Number(a);
+      const nb = Number(b);
+      const aIsNum = Number.isFinite(na);
+      const bIsNum = Number.isFinite(nb);
+
+      if (aIsNum && bIsNum) return na - nb;
+      if (aIsNum && !bIsNum) return -1;
+      if (!aIsNum && bIsNum) return 1;
+      return a.localeCompare(b, "es");
+    });
   }
 
   function formatDateDDMMYYYY(date) {
@@ -150,25 +179,18 @@
   // =========================
   function shouldHideInTable(metricName) {
     const n = normalize(metricName);
-
-    // Ocultar exactamente estas filas del body/table:
-    // - Linea TM
-    // - Linea TT
-    // - Legajo inasistencia (o cualquier fila de legajos+inasist)
     if (n === "linea tm") return true;
     if (n === "linea tt") return true;
-
-    // filas de legajos de inasistencia (tolerante)
     if (n.includes("legajo") && n.includes("inasist")) return true;
 
-    // si tu sheet tuviera una fila llamada exactamente "legajo inasistencia"
-    if (n === "legajo inasistencia") return true;
+    // si también querés ocultar "Inasistencias TM" de la tabla:
+    if (n === "inasistencias tm") return true;
 
     return false;
   }
 
   // =========================
-  // BUILD CARDS (KPIs + tabla filtrada)
+  // BUILD CARDS ✅ (incluye legajos bajo "Inasistencias TM")
   // =========================
   function buildCards(matrix, headerRow, metricCol) {
     const h = headerRow - 1;
@@ -190,34 +212,61 @@
       let lineaTT = "—";
       let legajosInasist = [];
 
-      const metricsAll = [];
       const metricsTable = [];
 
-      rows.forEach(r => {
-        const name = r[mCol];
-        if (!name) return;
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const name = (r[mCol] ?? "").trim();
+        const value = (r[c] ?? "").trim();
 
-        const value = r[c];
+        // filas sin nombre: por defecto no van a tabla
+        if (!name) continue;
+
         const n = normalize(name);
 
-        // guardo lista completa (por si necesitás luego)
-        const metricObj = { name, value };
-        metricsAll.push(metricObj);
-
-        // KPI: Linea TM/TT
+        // KPI TM/TT
         if (n.includes("linea tm")) lineaTM = value || "—";
         if (n.includes("linea tt")) lineaTT = value || "—";
 
-        // KPI: legajos (solo si existe fila de legajos+inasist)
+        // KPI legajos si existe fila explícita "legajos ... inasist"
         if (n.includes("legajo") && n.includes("inasist")) {
           legajosInasist = extractLegajos(value);
         }
 
-        // Tabla: incluir todo EXCEPTO lo que debe ocultarse
-        if (!shouldHideInTable(name)) {
-          metricsTable.push(metricObj);
+        // ✅ Si es "Inasistencias TM", capturar legajos en filas siguientes sin nombre
+        if (n === "inasistencias tm") {
+          const expected = parseNumber(value); // ej: 3
+          const collected = [];
+
+          let j = i + 1;
+          while (j < rows.length) {
+            const nextName = (rows[j][mCol] ?? "").trim();
+            const nextVal = (rows[j][c] ?? "").trim();
+
+            if (nextName) break; // llegó otra métrica, cortar
+            const legs = extractLegajos(nextVal);
+            if (legs.length) collected.push(...legs);
+            j++;
+          }
+
+          if (collected.length) {
+            legajosInasist = collected;
+          } else if (expected > 0 && !legajosInasist.length) {
+            // si hay inasist pero no legajos listados, dejamos vacío "—"
+            legajosInasist = [];
+          }
+
+          i = j - 1; // saltar las filas vacías consumidas
         }
-      });
+
+        // Tabla: incluir todo excepto lo oculto
+        if (!shouldHideInTable(name)) {
+          metricsTable.push({ name, value });
+        }
+      }
+
+      // ✅ ordenar numéricamente y quitar duplicados
+      legajosInasist = uniqueSortLegajos(legajosInasist);
 
       return {
         date: d,
@@ -225,7 +274,6 @@
         lineaTT,
         legajosInasist,
         metricsTable,
-        metricsAll
       };
     });
   }
@@ -238,7 +286,6 @@
     const valid = cards.filter(c => c.date && c.date <= today);
     if (!valid.length) return [];
 
-    // ancla = última fecha disponible <= hoy
     let anchor = valid[0].date;
     for (const c of valid) if (c.date > anchor) anchor = c.date;
 
@@ -250,7 +297,7 @@
   }
 
   // =========================
-  // RENDER (fecha + KPI + tabla filtrada)
+  // RENDER
   // =========================
   function render() {
     cardsGrid.innerHTML = "";
