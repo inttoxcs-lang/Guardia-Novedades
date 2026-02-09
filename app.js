@@ -14,6 +14,15 @@
   const REFRESH_MINUTES = 5;
   const REFRESH_MS = REFRESH_MINUTES * 60 * 1000;
 
+  // ✅ Rango de legajos en el Sheet: A16:AC25
+  // 0-based en matriz CSV:
+  // Filas 16..25 => índices 15..24
+  // Columnas A..AC => índices 0..28
+  const LEGAJO_ROW_START = 16; // 1-based
+  const LEGAJO_ROW_END = 25;   // 1-based
+  const LEGAJO_COL_START = 1;  // 1-based (A)
+  const LEGAJO_COL_END = 29;   // 1-based (AC)
+
   // =========================
   // DOM
   // =========================
@@ -57,15 +66,8 @@
     return x;
   }
 
-  function formatDate(d) {
-    const dd = String(d.getDate()).padStart(2, "0");
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    return `${dd}/${mm}/${d.getFullYear()}`;
-  }
-
   function extractSpreadsheetId(url) {
-    const s = String(url || "");
-    const m = s.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    const m = String(url || "").match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
     return m ? m[1] : "";
   }
 
@@ -83,14 +85,14 @@
     return Number.isNaN(dt.getTime()) ? null : startOfDay(dt);
   }
 
-  function parseNumber(value) {
-    const s = String(value ?? "").trim();
-    if (!s) return 0;
-    if (/^\d{1,2}:\d{2}$/.test(s)) return 0;
-    const m = s.match(/-?\d+(?:[.,]\d+)?/);
-    if (!m) return 0;
-    const n = Number(m[0].replace(",", "."));
-    return Number.isFinite(n) ? n : 0;
+  function formatDateWithWeekday(d) {
+    const weekday = new Intl.DateTimeFormat("es-ES", { weekday: "long" }).format(d);
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    // capitalizar primera letra
+    const w = weekday.charAt(0).toUpperCase() + weekday.slice(1);
+    return `${w} ${dd}/${mm}/${yyyy}`;
   }
 
   // ✅ extractor robusto: agarra TODOS los números (>=3 dígitos) aunque haya texto/símbolos
@@ -109,15 +111,9 @@
     const n = normalize(metricName);
     if (n === "linea tm") return true;
     if (n === "linea tt") return true;
-
-    // oculta filas de legajos (si existieran nombradas)
     if (n.includes("legajo") && n.includes("inasist")) return true;
-    if (n === "legajo" || n === "legajos") return true;
-
-    // queda solo KPI
     if (n === "inasistencias tm") return true;
     if (n === "inasistencias tt") return true;
-
     return false;
   }
 
@@ -182,7 +178,27 @@
   }
 
   // =========================
-  // BUILD CARDS (KPIs + tabla + legajos completos)
+  // LEER LEGAJOS DESDE A16:AC25 PARA UNA COLUMNA (fecha)
+  // =========================
+  function getLegajosFromRange(matrix, colIndex0) {
+    const r0 = LEGAJO_ROW_START - 1;
+    const r1 = LEGAJO_ROW_END - 1;
+    const c0 = LEGAJO_COL_START - 1;
+    const c1 = LEGAJO_COL_END - 1;
+
+    // si la fecha está fuera de A..AC, no hay legajos en ese rango
+    if (colIndex0 < c0 || colIndex0 > c1) return [];
+
+    const out = [];
+    for (let r = r0; r <= r1; r++) {
+      const cell = matrix[r]?.[colIndex0] ?? "";
+      out.push(...extractLegajos(cell));
+    }
+    return uniqueSortLegajos(out);
+  }
+
+  // =========================
+  // BUILD CARDS (KPIs + tabla + legajos desde rango)
   // =========================
   function buildCards(matrix, headerRow1, metricCol1) {
     const h = headerRow1 - 1;
@@ -191,6 +207,7 @@
     const header = matrix[h];
     if (!header) throw new Error("Fila de fechas inválida (headerRow).");
 
+    // columnas con fecha
     const cols = [];
     for (let c = 0; c < header.length; c++) {
       if (c === mCol) continue;
@@ -204,69 +221,26 @@
     return cols.map(({ c, d }) => {
       let lineaTM = "—";
       let lineaTT = "—";
-      let legajos = [];
       const table = [];
 
-      // acumulador por si hay varios bloques (TM + TT, etc.)
-      const legajosAcc = [];
-
+      // KPIs TM/TT salen de la “tabla principal” (columna de métricas)
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i] || [];
         const name = String(row[mCol] ?? "").trim();
         const val = String(row[c] ?? "").trim();
-
         if (!name) continue;
 
         const n = normalize(name);
-
-        // KPIs TM / TT
         if (n === "linea tm" || n.includes("linea tm")) lineaTM = val || "—";
         if (n === "linea tt" || n.includes("linea tt")) lineaTT = val || "—";
 
-        // Si existe fila explícita con legajos
-        if (n.includes("legajo") && n.includes("inasist")) {
-          legajosAcc.push(...extractLegajos(val));
-        }
-
-        // ✅ BLOQUE Inasistencias TM o TT: leer legajos debajo aunque haya filas "Legajo" / vacías
-        if (n === "inasistencias tm" || n === "inasistencias tt") {
-          const expected = parseNumber(val); // no limita, solo referencia
-          void expected;
-
-          let j = i + 1;
-          while (j < rows.length) {
-            const nextNameRaw = String(rows[j]?.[mCol] ?? "");
-            const nextName = nextNameRaw.trim();
-            const nextN = normalize(nextName);
-            const nextVal = String(rows[j]?.[c] ?? "").trim();
-
-            // Cortar SOLO cuando aparezca una métrica real (no legajo/legajos y no vacío)
-            // Ojo: si nextName es "Legajo" o "Legajos", seguimos.
-            if (nextName) {
-              const isLegajoRow =
-                nextN === "legajo" ||
-                nextN === "legajos" ||
-                (nextN.includes("legajo") && !nextN.includes("linea"));
-
-              if (!isLegajoRow) break;
-            }
-
-            // Acumular legajos del valor del día (aunque la fila tenga nombre o no)
-            legajosAcc.push(...extractLegajos(nextVal));
-
-            j++;
-          }
-
-          i = j - 1; // saltar filas consumidas
-        }
-
-        // Tabla: todo excepto lo oculto
         if (!shouldHideInTable(name)) {
           table.push({ name, val });
         }
       }
 
-      legajos = uniqueSortLegajos(legajosAcc);
+      // ✅ Legajos SOLO desde A16:AC25 (por columna de fecha)
+      const legajos = getLegajosFromRange(matrix, c);
 
       return { date: d, lineaTM, lineaTT, legajos, table };
     });
@@ -305,12 +279,14 @@
         isToday ? "card--today" : ""
       }`;
 
+      const fechaTxt = formatDateWithWeekday(card.date);
+
       el.innerHTML = `
         <div class="card-body">
           <div class="card-date">
             <div class="date-pill">
               <span class="dot ${hasInasist ? "dot--red" : "dot--green"}"></span>
-              ${escapeHtml(formatDate(card.date))}
+              ${escapeHtml(fechaTxt)}
             </div>
           </div>
 
@@ -387,3 +363,7 @@
   load();
   startAutoRefresh();
 })();
+
+																												
+																												
+																												
