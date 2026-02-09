@@ -9,7 +9,7 @@
   const DEFAULT_HEADER_ROW = 1; // fila donde están las fechas (1-based)
   const DEFAULT_METRIC_COL = 1; // columna métricas (A=1)
 
-  // ✅ Exacto como pediste: HOY + 6 días atrás (7 tarjetas)
+  // ✅ 7 tarjetas: (último día con datos <= hoy) + 6 días atrás
   const DAYS_BACK = 6;
 
   // =========================
@@ -35,7 +35,7 @@
   // =========================
   // STATE
   // =========================
-  // [{ dayLabel, dayDate, metrics, searchBlob }]
+  // [{ dayLabel, dayDate, metrics:[{name,value}], inasistCount, legajosInasist[], searchBlob }]
   let dayCards = [];
   let filteredCards = [];
 
@@ -47,7 +47,7 @@
   headerRowInput.value = String(DEFAULT_HEADER_ROW);
   metricColInput.value = String(DEFAULT_METRIC_COL);
 
-  openSheetBtn.addEventListener("click", () => {
+  openSheetBtn?.addEventListener("click", () => {
     window.open(SHEET_URL, "_blank", "noopener,noreferrer");
   });
 
@@ -89,7 +89,7 @@
     return x;
   }
 
-  function fmtISODate(d) {
+  function iso(d) {
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, "0");
     const dd = String(d.getDate()).padStart(2, "0");
@@ -101,9 +101,8 @@
   // =========================
   async function fetchCsv(spreadsheetId, gid) {
     const csvUrl =
-      `https://docs.google.com/spreadsheets/d/${encodeURIComponent(
-        spreadsheetId
-      )}/export?format=csv&gid=${encodeURIComponent(gid)}`;
+      `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}` +
+      `/export?format=csv&gid=${encodeURIComponent(gid)}`;
 
     const res = await fetch(csvUrl, { cache: "no-store" });
     const contentType = res.headers.get("content-type") || "";
@@ -112,16 +111,14 @@
     console.log("CSV URL:", csvUrl);
     console.log("HTTP:", res.status, res.statusText);
     console.log("Content-Type:", contentType);
-    console.log("Preview:", text.slice(0, 300));
+    console.log("Preview:", text.slice(0, 250));
 
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}. El Sheet no es accesible públicamente.`);
-    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}. El Sheet no es accesible públicamente.`);
 
     if (
       contentType.includes("text/html") ||
       text.trim().startsWith("<") ||
-      text.includes("<html")
+      text.toLowerCase().includes("<html")
     ) {
       throw new Error(
         "Google devolvió HTML (login/permisos). Publicá el Sheet: Archivo → Publicar en la web."
@@ -132,7 +129,7 @@
   }
 
   // =========================
-  // CSV → MATRIZ
+  // CSV -> Matrix
   // =========================
   function parseCsvToMatrix(text) {
     const rows = [];
@@ -176,23 +173,20 @@
   }
 
   // =========================
-  // Parse de fecha (más robusto)
-  // - soporta: "09/02", "09/02/2026", "2026-02-09"
-  // - soporta texto alrededor: "Lun 09/02", "09/02 (hoy)", etc.
-  // - asume formato AR dd/mm si viene con slash
+  // Parse fecha desde headers
   // =========================
   function parseDayLabelToDate(label) {
     const raw = String(label || "").trim();
     if (!raw) return null;
 
-    // 1) si viene ISO escondido
+    // ISO escondido
     let m = raw.match(/(\d{4})-(\d{2})-(\d{2})/);
     if (m) {
       const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-      return isNaN(dt.getTime()) ? null : dt;
+      return isNaN(dt.getTime()) ? null : startOfDay(dt);
     }
 
-    // 2) buscar dd/mm/yyyy o dd/mm/yy en cualquier parte del string
+    // dd/mm/yyyy
     m = raw.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
     if (m) {
       const dd = Number(m[1]);
@@ -200,64 +194,126 @@
       const yy = Number(m[3]);
       const yyyy = yy < 100 ? 2000 + yy : yy;
       const dt = new Date(yyyy, mm - 1, dd);
-      return isNaN(dt.getTime()) ? null : dt;
+      return isNaN(dt.getTime()) ? null : startOfDay(dt);
     }
 
-    // 3) buscar dd/mm (sin año) en cualquier parte
+    // dd/mm (sin año)
     m = raw.match(/(\d{1,2})\/(\d{1,2})/);
     if (m) {
       const dd = Number(m[1]);
       const mm = Number(m[2]);
-
-      // asumimos año actual (suficiente para "hoy y 6 atrás")
-      const today = new Date();
-      const yyyy = today.getFullYear();
-
+      const yyyy = new Date().getFullYear();
       const dt = new Date(yyyy, mm - 1, dd);
-      return isNaN(dt.getTime()) ? null : dt;
+      return isNaN(dt.getTime()) ? null : startOfDay(dt);
     }
 
     return null;
   }
 
   // =========================
-  // Construcción de cards
+  // Inasistencias + legajos
+  // =========================
+  function normalizeStr(s) {
+    return String(s ?? "").trim().toLowerCase();
+  }
+
+  function isInasistMetricName(name) {
+    const n = normalizeStr(name);
+    // incluye "inasist..." pero excluye cosas de hora tipo "salida último servicio"
+    return n.includes("inasist");
+  }
+
+  function parseNumericSafe(value) {
+    const s = String(value ?? "").trim();
+    if (!s) return 0;
+    // si es hora (6:26) no lo tomamos como número
+    if (/^\d{1,2}:\d{2}$/.test(s)) return 0;
+    // tomar primer número (permite "2", "2.0", "2,0")
+    const m = s.match(/-?\d+(?:[.,]\d+)?/);
+    if (!m) return 0;
+    return Number(m[0].replace(",", ".")) || 0;
+  }
+
+  function extractLegajosFromText(value) {
+    // tolerante: separa por coma/espacio/punto y coma / salto
+    // y se queda con "tokens" que tengan al menos 3 dígitos (ajustable)
+    const s = String(value ?? "").trim();
+    if (!s) return [];
+
+    return s
+      .split(/[\s,;|\n]+/g)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .filter((t) => /\d{3,}/.test(t)); // "legajo" suele ser numérico
+  }
+
+  function computeInasistAndLegajos(metrics) {
+    let inasistCount = 0;
+
+    // Si el sheet trae una fila específica con legajos, la usamos
+    let legajosInasist = [];
+
+    for (const m of metrics) {
+      const name = normalizeStr(m.name);
+      const val = m.value;
+
+      // suma de inasistencias (si el nombre contiene inasist...)
+      if (isInasistMetricName(name)) {
+        inasistCount += parseNumericSafe(val);
+      }
+
+      // detectar fila de legajos (varias posibilidades)
+      const looksLikeLegajosRow =
+        (name.includes("legajo") || name.includes("legajos")) &&
+        name.includes("inasist");
+
+      if (looksLikeLegajosRow) {
+        legajosInasist = extractLegajosFromText(val);
+      }
+    }
+
+    return { inasistCount, legajosInasist };
+  }
+
+  // =========================
+  // Build cards (matriz -> columnas por día)
   // =========================
   function buildCardsFromMatrix(matrix, headerRow1, metricCol1) {
-    const h = headerRow1 - 1;
-    const m = metricCol1 - 1;
+    const h = Math.max(1, Number(headerRow1 || 1)) - 1;
+    const m = Math.max(1, Number(metricCol1 || 1)) - 1;
 
     const header = matrix[h];
-    if (!header) throw new Error("Fila de fechas inexistente.");
+    if (!header) throw new Error("Fila de fechas inexistente (revisá 'Fila de fechas').");
 
-    // columnas con fecha parseable
     const dayCols = [];
-    header.forEach((label, c) => {
-      if (c === m) return;
-      const dayDate = parseDayLabelToDate(label);
-      if (dayDate) dayCols.push({ c, label, dayDate: startOfDay(dayDate) });
-    });
-
-    if (!dayCols.length) {
-      throw new Error("No se detectaron columnas de fecha/día en esa fila.");
+    for (let c = 0; c < header.length; c++) {
+      if (c === m) continue;
+      const dayDate = parseDayLabelToDate(header[c]);
+      if (dayDate) dayCols.push({ c, label: header[c], dayDate });
     }
+
+    if (!dayCols.length) throw new Error("No se detectaron columnas de fecha/día en esa fila.");
 
     const rows = matrix.slice(h + 1);
 
     return dayCols.map(({ c, label, dayDate }) => {
       const metrics = [];
-      rows.forEach((r) => {
+      for (const r of rows) {
         const name = (r[m] ?? "").trim();
-        if (!name) return;
+        if (!name) continue;
         metrics.push({ name, value: (r[c] ?? "").trim() });
-      });
+      }
+
+      const { inasistCount, legajosInasist } = computeInasistAndLegajos(metrics);
 
       return {
         dayLabel: label,
         dayDate,
         metrics,
+        inasistCount,
+        legajosInasist,
         searchBlob: (
-          label +
+          String(label) +
           " " +
           metrics.map((x) => `${x.name} ${x.value}`).join(" ")
         ).toLowerCase(),
@@ -266,46 +322,92 @@
   }
 
   // =========================
-  // Filtro exacto: hoy → hoy-6 (sin futuros)
+  // Ventana: ancla = max fecha <= hoy
   // =========================
-  function applyDateWindow(cards) {
+  function windowAndSort(cards) {
     const today = startOfDay(new Date());
-    const min = addDays(today, -DAYS_BACK);
 
-    return cards
-      .filter((c) => c.dayDate && c.dayDate <= today && c.dayDate >= min)
-      .sort((a, b) => b.dayDate.getTime() - a.dayDate.getTime()); // DESC
+    const nonFuture = cards.filter((c) => c.dayDate && c.dayDate.getTime() <= today.getTime());
+    if (!nonFuture.length) return { windowed: [], anchor: null, min: null, max: null };
+
+    let anchor = nonFuture[0].dayDate;
+    for (const c of nonFuture) if (c.dayDate.getTime() > anchor.getTime()) anchor = c.dayDate;
+
+    const min = addDays(anchor, -DAYS_BACK);
+    const max = anchor;
+
+    const windowed = nonFuture
+      .filter((c) => c.dayDate.getTime() >= min.getTime() && c.dayDate.getTime() <= max.getTime())
+      .sort((a, b) => b.dayDate.getTime() - a.dayDate.getTime());
+
+    return { windowed, anchor, min, max };
+  }
+
+  // =========================
+  // Semáforo
+  // =========================
+  function trafficStatus(card) {
+    // rojo si hay inasistencias > 0
+    if (typeof card.inasistCount === "number") {
+      if (card.inasistCount > 0) return "red";
+      return "green";
+    }
+    return "yellow";
+  }
+
+  function dotHtml(status) {
+    const color =
+      status === "red" ? "#ef4444" :
+      status === "green" ? "#22c55e" :
+      "#f59e0b";
+
+    return `<span class="dot" style="background:${color}; box-shadow:0 0 0 4px color-mix(in srgb, ${color} 25%, transparent);"></span>`;
   }
 
   // =========================
   // RENDER
   // =========================
   function buildCard(card) {
+    const status = trafficStatus(card);
+
+    // KPIs simples
+    const nonEmpty = card.metrics.filter((m) => String(m.value ?? "").trim() !== "").length;
+
+    // ✅ Mostrar TODAS las métricas en la tarjeta
+    const rowsHtml = card.metrics
+      .map(
+        (m) => `
+        <div class="row">
+          <div class="key">${escapeHtml(m.name)}</div>
+          <div class="val">${escapeHtml(m.value || "—")}</div>
+        </div>`
+      )
+      .join("");
+
     const el = document.createElement("article");
     el.className = "card";
 
     el.innerHTML = `
       <div class="card-header">
         <div class="badge">
-          <span class="dot"></span>${escapeHtml(card.dayLabel)} · ${card.metrics.length} métricas
+          ${dotHtml(status)}
+          ${escapeHtml(card.dayLabel)} · ${card.metrics.length} métricas
+          ${status === "red" ? `· ⚠️ Inasistencias: ${escapeHtml(String(card.inasistCount))}` : ""}
         </div>
         <div class="card-actions">
-          <button class="icon-btn" title="Ver detalle">🔎</button>
+          <button class="icon-btn" title="Detalles (legajos con inasistencia)">🔎</button>
         </div>
       </div>
 
       <div class="card-body">
-        <div class="table">
-          ${card.metrics
-            .slice(0, 10)
-            .map(
-              (m) => `
-              <div class="row">
-                <div class="key">${escapeHtml(m.name)}</div>
-                <div class="val">${escapeHtml(m.value || "—")}</div>
-              </div>`
-            )
-            .join("")}
+        <div class="kpi-row">
+          <div class="kpi"><div class="k">Con valor</div><div class="v">${escapeHtml(String(nonEmpty))}</div></div>
+          <div class="kpi"><div class="k">Total métricas</div><div class="v">${escapeHtml(String(card.metrics.length))}</div></div>
+          <div class="kpi"><div class="k">Inasistencias</div><div class="v">${escapeHtml(String(card.inasistCount ?? 0))}</div></div>
+        </div>
+
+        <div class="table table-scroll">
+          ${rowsHtml}
         </div>
       </div>
     `;
@@ -317,46 +419,67 @@
   function renderCards() {
     cardsGrid.innerHTML = "";
 
-    const windowed = applyDateWindow(dayCards);
+    const { windowed, anchor, min, max } = windowAndSort(dayCards);
 
-    // búsqueda
     const q = searchInput.value.trim().toLowerCase();
     filteredCards = !q ? windowed : windowed.filter((c) => c.searchBlob.includes(q));
 
     filteredCards.forEach((c) => cardsGrid.appendChild(buildCard(c)));
 
-    const today = startOfDay(new Date());
-    const min = addDays(today, -DAYS_BACK);
+    if (!anchor) {
+      showHint("No encontré fechas válidas (o todas son futuras). Revisá la fila de fechas.", "warn");
+      return;
+    }
 
     if (!filteredCards.length) {
-      showHint(
-        `No hay tarjetas en el rango ${fmtISODate(min)} → ${fmtISODate(today)} (o no coincide la búsqueda).`,
-        "warn"
-      );
-    } else {
-      showHint(
-        `Ordenado por fecha (DESC). Mostrando ${filteredCards.length} día(s): ${fmtISODate(today)} → ${fmtISODate(min)}.`,
-        "ok"
-      );
+      showHint(`No hay tarjetas en el rango ${iso(min)} → ${iso(max)} o no coincide la búsqueda.`, "warn");
+      return;
     }
+
+    showHint(`✅ Ordenado DESC. Mostrando ${filteredCards.length} día(s): ${iso(max)} → ${iso(min)}.`, "ok");
   }
 
+  // ✅ Modal: SOLO legajos con inasistencia
   function openDetail(card) {
-    modalTitle.textContent = `Detalle ${card.dayLabel}`;
-    modalSubtitle.textContent = `${card.metrics.length} métricas · Fecha parseada: ${fmtISODate(card.dayDate)}`;
+    modalTitle.textContent = `Detalles ${card.dayLabel}`;
+    modalSubtitle.textContent =
+      `Legajos con inasistencia · Inasistencias: ${String(card.inasistCount ?? 0)} · Fecha: ${iso(card.dayDate)}`;
+
+    const legajos = Array.isArray(card.legajosInasist) ? card.legajosInasist : [];
+
+    if (!legajos.length) {
+      modalBody.innerHTML = `
+        <div style="padding:12px; border:1px dashed rgba(255,255,255,0.14); border-radius:14px; color:rgba(255,255,255,0.72);">
+          No se encontraron <b>legajos</b> en el Sheet para este día.
+          <br/><br/>
+          Para que aparezcan, el Google Sheet debe tener alguna fila tipo:
+          <div style="margin-top:8px; font-family:var(--mono); font-size:12px; opacity:.9;">
+            "Legajos con inasistencia" → "1234, 5678, 9012"
+          </div>
+        </div>
+      `;
+      detailModal.showModal();
+      return;
+    }
+
     modalBody.innerHTML = `
-      <div class="table">
-        ${card.metrics
+      <div style="display:flex; flex-wrap:wrap; gap:10px;">
+        ${legajos
           .map(
-            (m) => `
-          <div class="row">
-            <div class="key">${escapeHtml(m.name)}</div>
-            <div class="val">${escapeHtml(m.value || "—")}</div>
-          </div>`
+            (l) => `
+          <div style="
+            padding:10px 12px;
+            border-radius:999px;
+            border:1px solid rgba(255,255,255,0.14);
+            background:rgba(255,255,255,0.06);
+            font-family:var(--mono);
+            font-weight:800;
+          ">${escapeHtml(l)}</div>`
           )
           .join("")}
       </div>
     `;
+
     detailModal.showModal();
   }
 
@@ -371,19 +494,25 @@
       cardsGrid.innerHTML = "";
 
       const id = extractSpreadsheetId(SHEET_URL);
-      const csv = await fetchCsv(id, gidInput.value);
+      const gid = String(gidInput.value || DEFAULT_GID).trim();
+
+      const csv = await fetchCsv(id, gid);
       const matrix = parseCsvToMatrix(csv);
 
       dayCards = buildCardsFromMatrix(
         matrix,
-        Number(headerRowInput.value),
-        Number(metricColInput.value)
+        Number(headerRowInput.value || DEFAULT_HEADER_ROW),
+        Number(metricColInput.value || DEFAULT_METRIC_COL)
       );
 
-      // 🔎 Debug útil: ver fechas parseadas
       console.log(
-        "Day cards parsed (label -> date):",
-        dayCards.map((c) => ({ label: c.dayLabel, date: c.dayDate && fmtISODate(c.dayDate) }))
+        "Parsed cards:",
+        dayCards.map((c) => ({
+          label: c.dayLabel,
+          date: c.dayDate ? iso(c.dayDate) : null,
+          inasist: c.inasistCount,
+          legajos: c.legajosInasist?.length || 0,
+        }))
       );
 
       renderCards();
@@ -397,6 +526,6 @@
   applyBtn.onclick = load;
   searchInput.oninput = renderCards;
 
-  // AUTOCARGA
+  // Autocarga
   load();
 })();
