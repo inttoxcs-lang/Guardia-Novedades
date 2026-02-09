@@ -10,6 +10,8 @@
   const DEFAULT_METRIC_COL = 1;
   const DAYS_BACK = 6;
 
+  console.log("APP VERSION FINAL KPI TM/TT");
+
   // =========================
   // DOM
   // =========================
@@ -21,9 +23,6 @@
   const searchInput = document.getElementById("searchInput");
   const cardsGrid = document.getElementById("cardsGrid");
 
-  // =========================
-  // STATE
-  // =========================
   let dayCards = [];
 
   // =========================
@@ -54,18 +53,36 @@
   }
 
   function normalize(s) {
-    return String(s || "").toLowerCase().trim();
+    return String(s ?? "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function parseNumber(value) {
+    const s = String(value ?? "").trim();
+    if (!s) return 0;
+    if (/^\d{1,2}:\d{2}$/.test(s)) return 0; // evita horas
+    const m = s.match(/-?\d+(?:[.,]\d+)?/);
+    if (!m) return 0;
+    const n = Number(m[0].replace(",", "."));
+    return Number.isFinite(n) ? n : 0;
   }
 
   // =========================
   // FETCH CSV
   // =========================
   async function fetchCsv(spreadsheetId, gid) {
-    const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`;
+    const url = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(
+      spreadsheetId
+    )}/export?format=csv&gid=${encodeURIComponent(gid)}`;
+
     const res = await fetch(url, { cache: "no-store" });
     const text = await res.text();
 
-    if (!res.ok || text.startsWith("<")) {
+    if (!res.ok || text.trim().startsWith("<")) {
       throw new Error("El Google Sheet no es público o no está publicado.");
     }
     return text;
@@ -110,21 +127,25 @@
 
     row.push(field);
     rows.push(row);
+
     return rows.map(r => r.map(c => String(c ?? "").trim()));
   }
 
   // =========================
-  // FECHAS
+  // FECHAS (dd/mm o dd/mm/yyyy)
   // =========================
   function parseDate(label) {
-    const m = String(label).match(/(\d{1,2})\/(\d{1,2})\/?(\d{2,4})?/);
+    const s = String(label ?? "");
+    const m = s.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
     if (!m) return null;
 
-    const d = Number(m[1]);
-    const mo = Number(m[2]) - 1;
-    const y = m[3] ? Number(m[3]) : new Date().getFullYear();
-    const date = new Date(y < 100 ? 2000 + y : y, mo, d);
-    return isNaN(date) ? null : startOfDay(date);
+    const dd = Number(m[1]);
+    const mm = Number(m[2]) - 1;
+    const yRaw = m[3] ? Number(m[3]) : new Date().getFullYear();
+    const yyyy = yRaw < 100 ? 2000 + yRaw : yRaw;
+
+    const dt = new Date(yyyy, mm, dd);
+    return Number.isNaN(dt.getTime()) ? null : startOfDay(dt);
   }
 
   // =========================
@@ -132,12 +153,13 @@
   // =========================
   function buildCards(matrix, headerRow, metricCol) {
     const h = headerRow - 1;
-    const m = metricCol - 1;
+    const mCol = metricCol - 1;
     const header = matrix[h];
+    if (!header) throw new Error("Fila de fechas inválida.");
 
     const cols = [];
     header.forEach((label, c) => {
-      if (c === m) return;
+      if (c === mCol) return;
       const d = parseDate(label);
       if (d) cols.push({ c, d });
     });
@@ -146,26 +168,21 @@
 
     return cols.map(({ c, d }) => {
       const metrics = [];
-      let inasist = 0;
       let lineaTM = 0;
       let lineaTT = 0;
+      let inasist = 0;
 
       rows.forEach(r => {
-        const name = r[m];
+        const name = r[mCol];
         if (!name) return;
 
         const value = r[c];
         metrics.push({ name, value });
 
         const n = normalize(name);
-
-        if (n === "linea tm") lineaTM = Number(value) || 0;
-        if (n === "linea tt") lineaTT = Number(value) || 0;
-
-        if (n.includes("inasist")) {
-          const v = Number(String(value).replace(",", "."));
-          if (!isNaN(v)) inasist += v;
-        }
+        if (n.includes("linea tm")) lineaTM = parseNumber(value);
+        if (n.includes("linea tt")) lineaTT = parseNumber(value);
+        if (n.includes("inasist")) inasist += parseNumber(value);
       });
 
       return { date: d, metrics, lineaTM, lineaTT, inasist };
@@ -173,12 +190,16 @@
   }
 
   // =========================
-  // WINDOW & SORT
+  // WINDOW + SORT
   // =========================
   function windowCards(cards) {
     const today = startOfDay(new Date());
-    const valid = cards.filter(c => c.date <= today);
-    const anchor = valid.reduce((a, b) => (b.date > a ? b.date : a), valid[0]?.date);
+    const valid = cards.filter(c => c.date && c.date <= today);
+    if (!valid.length) return [];
+
+    let anchor = valid[0].date;
+    for (const c of valid) if (c.date > anchor) anchor = c.date;
+
     const min = addDays(anchor, -DAYS_BACK);
 
     return valid
@@ -191,15 +212,15 @@
   // =========================
   function render() {
     cardsGrid.innerHTML = "";
-    const q = searchInput.value.toLowerCase();
+    const q = (searchInput.value || "").toLowerCase().trim();
 
     windowCards(dayCards)
-      .filter(c =>
-        !q ||
-        c.metrics.some(m =>
+      .filter(card => {
+        if (!q) return true;
+        return card.metrics.some(m =>
           `${m.name} ${m.value}`.toLowerCase().includes(q)
-        )
-      )
+        );
+      })
       .forEach(card => {
         const el = document.createElement("article");
         el.className = "card";
@@ -209,15 +230,15 @@
             <div class="kpi-row">
               <div class="kpi">
                 <div class="k">Línea TM</div>
-                <div class="v">${card.lineaTM}</div>
+                <div class="v">${escapeHtml(String(card.lineaTM))}</div>
               </div>
               <div class="kpi">
                 <div class="k">Línea TT</div>
-                <div class="v">${card.lineaTT}</div>
+                <div class="v">${escapeHtml(String(card.lineaTT))}</div>
               </div>
               <div class="kpi">
                 <div class="k">Inasistencias</div>
-                <div class="v">${card.inasist}</div>
+                <div class="v">${escapeHtml(String(card.inasist))}</div>
               </div>
             </div>
 
@@ -241,21 +262,23 @@
   // =========================
   async function load() {
     const id = extractSpreadsheetId(SHEET_URL);
-    const csv = await fetchCsv(id, gidInput.value || DEFAULT_GID);
+    const gid = gidInput?.value || DEFAULT_GID;
+
+    const csv = await fetchCsv(id, gid);
     const matrix = parseCsv(csv);
 
     dayCards = buildCards(
       matrix,
-      Number(headerRowInput.value || DEFAULT_HEADER_ROW),
-      Number(metricColInput.value || DEFAULT_METRIC_COL)
+      Number(headerRowInput?.value || DEFAULT_HEADER_ROW),
+      Number(metricColInput?.value || DEFAULT_METRIC_COL)
     );
 
     render();
   }
 
-  reloadBtn.onclick = load;
-  applyBtn.onclick = load;
-  searchInput.oninput = render;
+  reloadBtn && (reloadBtn.onclick = load);
+  applyBtn && (applyBtn.onclick = load);
+  searchInput && (searchInput.oninput = render);
 
-  load();
+  load().catch(err => console.error(err));
 })();
