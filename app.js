@@ -8,291 +8,149 @@
   const DEFAULT_GID = "0";
   const DEFAULT_HEADER_ROW = 1;
   const DEFAULT_METRIC_COL = 1;
-
-  // 7 tarjetas: ancla (último día con datos <= hoy) + 6 días atrás
   const DAYS_BACK = 6;
 
-  // =========================
-  // DOM
-  // =========================
-  const cardsGrid = document.getElementById("cardsGrid");
+  // 🔄 Auto refresh (minutos)
+  const REFRESH_MINUTES = 5;
+  const REFRESH_MS = REFRESH_MINUTES * 60 * 1000;
 
+  const cardsGrid = document.getElementById("cardsGrid");
   let dayCards = [];
+  let isLoading = false;
+  let refreshTimer = null;
 
   // =========================
   // HELPERS
   // =========================
-  function escapeHtml(str) {
-    return String(str ?? "")
+  const escapeHtml = s =>
+    String(s ?? "")
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#039;");
-  }
 
-  function extractSpreadsheetId(url) {
-    const m = String(url).match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-    return m ? m[1] : "";
-  }
-
-  function startOfDay(d) {
-    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  }
-
-  function addDays(d, days) {
-    const x = new Date(d);
-    x.setDate(x.getDate() + days);
-    return x;
-  }
-
-  function normalize(s) {
-    return String(s ?? "")
+  const normalize = s =>
+    String(s ?? "")
       .toLowerCase()
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
       .replace(/\s+/g, " ")
       .trim();
-  }
 
-  function parseNumber(value) {
-    const s = String(value ?? "").trim();
-    if (!s) return 0;
-    if (/^\d{1,2}:\d{2}$/.test(s)) return 0; // evita horas
-    const m = s.match(/-?\d+(?:[.,]\d+)?/);
-    if (!m) return 0;
-    const n = Number(m[0].replace(",", "."));
-    return Number.isFinite(n) ? n : 0;
-  }
+  const startOfDay = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 
-  function extractLegajos(value) {
-    // captura números (>=3 dígitos)
-    return String(value ?? "")
+  const addDays = (d, n) => {
+    const x = new Date(d);
+    x.setDate(x.getDate() + n);
+    return x;
+  };
+
+  const extractLegajos = v =>
+    String(v ?? "")
       .split(/[\s,;|]+/)
-      .map(v => v.trim())
-      .filter(v => /^\d{3,}$/.test(v));
+      .filter(x => /^\d{3,}$/.test(x));
+
+  const uniqueSortLegajos = arr =>
+    Array.from(new Set(arr)).sort((a, b) => Number(a) - Number(b));
+
+  const parseNumber = v => {
+    const m = String(v ?? "").match(/-?\d+/);
+    return m ? Number(m[0]) : 0;
+  };
+
+  const formatDate = d =>
+    `${String(d.getDate()).padStart(2, "0")}/${String(
+      d.getMonth() + 1
+    ).padStart(2, "0")}/${d.getFullYear()}`;
+
+  // =========================
+  // FETCH + PARSE
+  // =========================
+  async function fetchCsv() {
+    const id = SHEET_URL.match(/\/d\/([^/]+)/)[1];
+    const url = `https://docs.google.com/spreadsheets/d/${id}/export?format=csv&gid=${DEFAULT_GID}`;
+    const r = await fetch(url, { cache: "no-store" });
+    const t = await r.text();
+    if (t.startsWith("<")) throw "Sheet no público";
+    return t;
   }
 
-  function uniqueSortLegajos(legajos) {
-    // 1) normaliza a string, 2) quita duplicados, 3) orden numérico
-    const uniq = Array.from(new Set((legajos || []).map(String)));
-
-    // sort numérico: si alguno no es numérico, lo manda al final por string
-    return uniq.sort((a, b) => {
-      const na = Number(a);
-      const nb = Number(b);
-      const aIsNum = Number.isFinite(na);
-      const bIsNum = Number.isFinite(nb);
-
-      if (aIsNum && bIsNum) return na - nb;
-      if (aIsNum && !bIsNum) return -1;
-      if (!aIsNum && bIsNum) return 1;
-      return a.localeCompare(b, "es");
-    });
+  function parseCsv(t) {
+    return t
+      .trim()
+      .split("\n")
+      .map(r => r.split(",").map(c => c.trim()));
   }
 
-  function formatDateDDMMYYYY(date) {
-    const d = String(date.getDate()).padStart(2, "0");
-    const m = String(date.getMonth() + 1).padStart(2, "0");
-    return `${d}/${m}/${date.getFullYear()}`;
-  }
-
-  // =========================
-  // FETCH CSV
-  // =========================
-  async function fetchCsv(spreadsheetId, gid) {
-    const url = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(
-      spreadsheetId
-    )}/export?format=csv&gid=${encodeURIComponent(gid)}`;
-
-    const res = await fetch(url, { cache: "no-store" });
-    const text = await res.text();
-
-    if (!res.ok || text.trim().startsWith("<")) {
-      throw new Error("El Google Sheet no es público o no está publicado.");
-    }
-    return text;
-  }
-
-  // =========================
-  // CSV -> MATRIX
-  // =========================
-  function parseCsv(text) {
-    const rows = [];
-    let row = [];
-    let field = "";
-    let inQuotes = false;
-
-    for (let i = 0; i < text.length; i++) {
-      const c = text[i];
-      const n = text[i + 1];
-
-      if (c === '"' && inQuotes && n === '"') {
-        field += '"';
-        i++;
-        continue;
-      }
-      if (c === '"') {
-        inQuotes = !inQuotes;
-        continue;
-      }
-      if (!inQuotes && c === ",") {
-        row.push(field);
-        field = "";
-        continue;
-      }
-      if (!inQuotes && c === "\n") {
-        row.push(field);
-        rows.push(row);
-        row = [];
-        field = "";
-        continue;
-      }
-      if (c !== "\r") field += c;
-    }
-
-    row.push(field);
-    rows.push(row);
-
-    return rows.map(r => r.map(c => String(c ?? "").trim()));
-  }
-
-  // =========================
-  // FECHAS (dd/mm o dd/mm/yyyy)
-  // =========================
   function parseDate(label) {
-    const s = String(label ?? "");
-    const m = s.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
+    const m = label.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?/);
     if (!m) return null;
-
-    const dd = Number(m[1]);
-    const mm = Number(m[2]) - 1;
-    const yRaw = m[3] ? Number(m[3]) : new Date().getFullYear();
-    const yyyy = yRaw < 100 ? 2000 + yRaw : yRaw;
-
-    const dt = new Date(yyyy, mm, dd);
-    return Number.isNaN(dt.getTime()) ? null : startOfDay(dt);
+    return startOfDay(
+      new Date(m[3] || new Date().getFullYear(), m[2] - 1, m[1])
+    );
   }
 
   // =========================
-  // FILTRO DE FILAS EN TABLA
+  // BUILD
   // =========================
-  function shouldHideInTable(metricName) {
-    const n = normalize(metricName);
-    if (n === "linea tm") return true;
-    if (n === "linea tt") return true;
-    if (n.includes("legajo") && n.includes("inasist")) return true;
-
-    // si también querés ocultar "Inasistencias TM" de la tabla:
-    if (n === "inasistencias tm") return true;
-
-    return false;
-  }
-
-  // =========================
-  // BUILD CARDS ✅ (incluye legajos bajo "Inasistencias TM")
-  // =========================
-  function buildCards(matrix, headerRow, metricCol) {
-    const h = headerRow - 1;
-    const mCol = metricCol - 1;
-    const header = matrix[h];
-    if (!header) throw new Error("Fila de fechas inválida.");
-
+  function buildCards(matrix) {
+    const header = matrix[0];
+    const rows = matrix.slice(1);
     const cols = [];
-    header.forEach((label, c) => {
-      if (c === mCol) return;
-      const d = parseDate(label);
-      if (d) cols.push({ c, d });
+
+    header.forEach((h, i) => {
+      if (i === 0) return;
+      const d = parseDate(h);
+      if (d) cols.push({ i, d });
     });
 
-    const rows = matrix.slice(h + 1);
+    return cols.map(({ i, d }) => {
+      let lineaTM = "—",
+        lineaTT = "—",
+        legajos = [];
+      const table = [];
 
-    return cols.map(({ c, d }) => {
-      let lineaTM = "—";
-      let lineaTT = "—";
-      let legajosInasist = [];
-
-      const metricsTable = [];
-
-      for (let i = 0; i < rows.length; i++) {
-        const r = rows[i];
-        const name = (r[mCol] ?? "").trim();
-        const value = (r[c] ?? "").trim();
-
-        // filas sin nombre: por defecto no van a tabla
+      for (let r = 0; r < rows.length; r++) {
+        const name = rows[r][0];
+        const val = rows[r][i];
         if (!name) continue;
-
         const n = normalize(name);
 
-        // KPI TM/TT
-        if (n.includes("linea tm")) lineaTM = value || "—";
-        if (n.includes("linea tt")) lineaTT = value || "—";
-
-        // KPI legajos si existe fila explícita "legajos ... inasist"
-        if (n.includes("legajo") && n.includes("inasist")) {
-          legajosInasist = extractLegajos(value);
-        }
-
-        // ✅ Si es "Inasistencias TM", capturar legajos en filas siguientes sin nombre
-        if (n === "inasistencias tm") {
-          const expected = parseNumber(value); // ej: 3
+        if (n === "linea tm") lineaTM = val;
+        else if (n === "linea tt") lineaTT = val;
+        else if (n === "inasistencias tm") {
+          const cant = parseNumber(val);
+          let j = r + 1;
           const collected = [];
-
-          let j = i + 1;
-          while (j < rows.length) {
-            const nextName = (rows[j][mCol] ?? "").trim();
-            const nextVal = (rows[j][c] ?? "").trim();
-
-            if (nextName) break; // llegó otra métrica, cortar
-            const legs = extractLegajos(nextVal);
-            if (legs.length) collected.push(...legs);
+          while (j < rows.length && !rows[j][0]) {
+            collected.push(...extractLegajos(rows[j][i]));
             j++;
           }
-
-          if (collected.length) {
-            legajosInasist = collected;
-          } else if (expected > 0 && !legajosInasist.length) {
-            // si hay inasist pero no legajos listados, dejamos vacío "—"
-            legajosInasist = [];
-          }
-
-          i = j - 1; // saltar las filas vacías consumidas
-        }
-
-        // Tabla: incluir todo excepto lo oculto
-        if (!shouldHideInTable(name)) {
-          metricsTable.push({ name, value });
+          if (cant) legajos = collected;
+          r = j - 1;
+        } else {
+          table.push({ name, val });
         }
       }
-
-      // ✅ ordenar numéricamente y quitar duplicados
-      legajosInasist = uniqueSortLegajos(legajosInasist);
 
       return {
         date: d,
         lineaTM,
         lineaTT,
-        legajosInasist,
-        metricsTable,
+        legajos: uniqueSortLegajos(legajos),
+        table
       };
     });
   }
 
-  // =========================
-  // WINDOW + SORT
-  // =========================
   function windowCards(cards) {
     const today = startOfDay(new Date());
-    const valid = cards.filter(c => c.date && c.date <= today);
-    if (!valid.length) return [];
-
-    let anchor = valid[0].date;
-    for (const c of valid) if (c.date > anchor) anchor = c.date;
-
+    const valid = cards.filter(c => c.date <= today);
+    const anchor = valid.reduce((a, b) => (b.date > a ? b.date : a), valid[0].date);
     const min = addDays(anchor, -DAYS_BACK);
-
     return valid
-      .filter(c => c.date >= min && c.date <= anchor)
+      .filter(c => c.date >= min)
       .sort((a, b) => b.date - a.date);
   }
 
@@ -301,66 +159,70 @@
   // =========================
   function render() {
     cardsGrid.innerHTML = "";
+    const today = startOfDay(new Date());
 
-    windowCards(dayCards).forEach(card => {
+    windowCards(dayCards).forEach(c => {
+      const isToday = c.date.getTime() === today.getTime();
+      const hasInasist = c.legajos.length > 0;
+
       const el = document.createElement("article");
-      el.className = "card";
-
-      const fecha = formatDateDDMMYYYY(card.date);
-      const legajosTxt = card.legajosInasist.length ? card.legajosInasist.join(", ") : "—";
+      el.className = `card ${hasInasist ? "card--alert" : "card--ok"} ${
+        isToday ? "card--today" : ""
+      }`;
 
       el.innerHTML = `
         <div class="card-body">
           <div class="card-date">
             <div class="date-pill">
-              <span class="dot"></span>
-              ${escapeHtml(fecha)}
+              <span class="dot ${hasInasist ? "dot--red" : "dot--green"}"></span>
+              ${formatDate(c.date)}
             </div>
           </div>
 
           <div class="kpi-row">
-            <div class="kpi">
-              <div class="k">Línea TM</div>
-              <div class="v">${escapeHtml(String(card.lineaTM))}</div>
-            </div>
-
-            <div class="kpi">
-              <div class="k">Línea TT</div>
-              <div class="v">${escapeHtml(String(card.lineaTT))}</div>
-            </div>
-
-            <div class="kpi">
-              <div class="k">Legajo inasistencia</div>
-              <div class="v">${escapeHtml(legajosTxt)}</div>
-            </div>
+            <div class="kpi"><div class="k">Línea TM</div><div class="v">${escapeHtml(
+              c.lineaTM
+            )}</div></div>
+            <div class="kpi"><div class="k">Línea TT</div><div class="v">${escapeHtml(
+              c.lineaTT
+            )}</div></div>
+            <div class="kpi"><div class="k">Legajo inasistencia</div><div class="v">${
+              c.legajos.length ? c.legajos.join(", ") : "—"
+            }</div></div>
           </div>
 
           <div class="table table-scroll">
-            ${card.metricsTable.map(m => `
-              <div class="row">
-                <div class="key">${escapeHtml(m.name)}</div>
-                <div class="val">${escapeHtml(m.value || "—")}</div>
-              </div>
-            `).join("")}
+            ${c.table
+              .map(
+                r => `<div class="row"><div class="key">${escapeHtml(
+                  r.name
+                )}</div><div class="val">${escapeHtml(r.val || "—")}</div></div>`
+              )
+              .join("")}
           </div>
         </div>
       `;
-
       cardsGrid.appendChild(el);
     });
   }
 
   // =========================
-  // LOAD
+  // LOAD + AUTO REFRESH
   // =========================
   async function load() {
-    const id = extractSpreadsheetId(SHEET_URL);
-    const csv = await fetchCsv(id, DEFAULT_GID);
-    const matrix = parseCsv(csv);
-
-    dayCards = buildCards(matrix, DEFAULT_HEADER_ROW, DEFAULT_METRIC_COL);
-    render();
+    if (isLoading) return;
+    isLoading = true;
+    try {
+      const csv = await fetchCsv();
+      dayCards = buildCards(parseCsv(csv));
+      render();
+    } finally {
+      isLoading = false;
+    }
   }
 
-  load().catch(err => console.error(err));
+  load();
+  refreshTimer = setInterval(() => {
+    if (document.visibilityState === "visible") load();
+  }, REFRESH_MS);
 })();
