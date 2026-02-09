@@ -9,6 +9,9 @@
   const DEFAULT_HEADER_ROW = 1; // fila donde están las fechas (1-based)
   const DEFAULT_METRIC_COL = 1; // columna métricas (A=1)
 
+  // ✅ Ventana: hoy y 7 días hacia atrás
+  const DAYS_BACK = 7;
+
   // =========================
   // DOM
   // =========================
@@ -32,7 +35,7 @@
   // =========================
   // STATE
   // =========================
-  let dayCards = [];
+  let dayCards = []; // [{ dayLabel, dayDate, metrics, searchBlob }]
   let filteredCards = [];
 
   // =========================
@@ -76,7 +79,7 @@
   }
 
   // =========================
-  // FETCH CSV (CORREGIDO)
+  // FETCH CSV (blindado)
   // =========================
   async function fetchCsv(spreadsheetId, gid) {
     const csvUrl =
@@ -88,31 +91,26 @@
     const contentType = res.headers.get("content-type") || "";
     const text = await res.text();
 
-    // DEBUG CLARO (mirar en F12 → Console)
     console.log("CSV URL:", csvUrl);
     console.log("HTTP:", res.status, res.statusText);
     console.log("Content-Type:", contentType);
     console.log("Preview:", text.slice(0, 300));
 
     if (!res.ok) {
-      throw new Error(
-        `HTTP ${res.status}. El Sheet no es accesible públicamente.`
-      );
+      throw new Error(`HTTP ${res.status}. El Sheet no es accesible públicamente.`);
     }
 
-    // Google devolvió HTML → login / permisos
     if (
       contentType.includes("text/html") ||
       text.trim().startsWith("<") ||
       text.includes("<html")
     ) {
       throw new Error(
-        "Google devolvió HTML (login/permisos). " +
-        "Tenés que ir a Google Sheets → Archivo → Publicar en la web."
+        "Google devolvió HTML (login/permisos). Publicá el Sheet: Archivo → Publicar en la web."
       );
     }
 
-    return text; // CSV REAL
+    return text;
   }
 
   // =========================
@@ -159,16 +157,78 @@
     return rows.map((r) => r.map((c) => String(c ?? "").trim()));
   }
 
-  function looksLikeDayLabel(s) {
-    if (!s) return false;
-    return (
-      /^\d{1,2}\/\d{1,2}$/.test(s) ||
-      /^\d{1,2}-\d{1,2}$/.test(s) ||
-      /^\d{4}-\d{2}-\d{2}$/.test(s) ||
-      /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(s)
-    );
+  // =========================
+  // Fecha: parse de headers tipo 01/02, 01/02/2026, 2026-02-01
+  // =========================
+  function parseDayLabelToDate(label) {
+    const s = String(label || "").trim();
+    if (!s) return null;
+
+    const today = new Date();
+    const y = today.getFullYear();
+
+    // yyyy-mm-dd
+    let m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) {
+      const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      return isNaN(dt.getTime()) ? null : dt;
+    }
+
+    // dd/mm/yyyy (o dd/mm/yy)
+    m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    if (m) {
+      const dd = Number(m[1]);
+      const mm = Number(m[2]);
+      let yy = Number(m[3]);
+      const yyyy = yy < 100 ? 2000 + yy : yy;
+      const dt = new Date(yyyy, mm - 1, dd);
+      return isNaN(dt.getTime()) ? null : dt;
+    }
+
+    // dd/mm (sin año) -> asumimos año actual
+    m = s.match(/^(\d{1,2})\/(\d{1,2})$/);
+    if (m) {
+      const dd = Number(m[1]);
+      const mm = Number(m[2]);
+      const dt = new Date(y, mm - 1, dd);
+      return isNaN(dt.getTime()) ? null : dt;
+    }
+
+    // dd-mm (sin año)
+    m = s.match(/^(\d{1,2})-(\d{1,2})$/);
+    if (m) {
+      const dd = Number(m[1]);
+      const mm = Number(m[2]);
+      const dt = new Date(y, mm - 1, dd);
+      return isNaN(dt.getTime()) ? null : dt;
+    }
+
+    return null;
   }
 
+  function startOfDay(d) {
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+
+  function addDays(d, days) {
+    const x = new Date(d);
+    x.setDate(x.getDate() + days);
+    return x;
+  }
+
+  function withinLastNDaysInclusive(dayDate, nDaysBack) {
+    const today = startOfDay(new Date());
+    const min = addDays(today, -nDaysBack); // hoy - N
+    const max = today; // hoy
+    const d = startOfDay(dayDate);
+
+    // Solo hasta hoy, sin futuros
+    return d >= min && d <= max;
+  }
+
+  // =========================
+  // Construcción de cards
+  // =========================
   function buildCardsFromMatrix(matrix, headerRow1, metricCol1) {
     const h = headerRow1 - 1;
     const m = metricCol1 - 1;
@@ -176,32 +236,29 @@
     const header = matrix[h];
     if (!header) throw new Error("Fila de fechas inexistente.");
 
+    // columnas con fecha válida
     const dayCols = [];
     header.forEach((label, c) => {
-      if (c !== m && looksLikeDayLabel(label)) {
-        dayCols.push({ c, label });
-      }
+      if (c === m) return;
+      const dayDate = parseDayLabelToDate(label);
+      if (dayDate) dayCols.push({ c, label, dayDate });
     });
 
-    if (!dayCols.length) {
-      throw new Error("No se detectaron columnas de fecha/día.");
-    }
+    if (!dayCols.length) throw new Error("No se detectaron columnas de fecha/día.");
 
     const rows = matrix.slice(h + 1);
 
-    return dayCols.map(({ c, label }) => {
+    const cards = dayCols.map(({ c, label, dayDate }) => {
       const metrics = [];
       rows.forEach((r) => {
         const name = (r[m] ?? "").trim();
         if (!name) return;
-        metrics.push({
-          name,
-          value: (r[c] ?? "").trim(),
-        });
+        metrics.push({ name, value: (r[c] ?? "").trim() });
       });
 
       return {
         dayLabel: label,
+        dayDate,
         metrics,
         searchBlob: (
           label +
@@ -210,6 +267,8 @@
         ).toLowerCase(),
       };
     });
+
+    return cards;
   }
 
   // =========================
@@ -221,11 +280,11 @@
 
     el.innerHTML = `
       <div class="card-header">
-        <div class="badge"><span class="dot"></span>${escapeHtml(
-          card.dayLabel
-        )} · ${card.metrics.length} métricas</div>
+        <div class="badge">
+          <span class="dot"></span>${escapeHtml(card.dayLabel)} · ${card.metrics.length} métricas
+        </div>
         <div class="card-actions">
-          <button class="icon-btn">🔎</button>
+          <button class="icon-btn" title="Ver detalle">🔎</button>
         </div>
       </div>
       <div class="card-body">
@@ -250,24 +309,28 @@
 
   function renderCards() {
     cardsGrid.innerHTML = "";
+
+    // ✅ filtro por fecha: hoy → 7 días atrás (y nada futuro)
+    const windowed = dayCards
+      .filter((c) => c.dayDate && withinLastNDaysInclusive(c.dayDate, DAYS_BACK))
+      // ✅ orden: hoy primero (desc)
+      .sort((a, b) => startOfDay(b.dayDate).getTime() - startOfDay(a.dayDate).getTime());
+
     const q = searchInput.value.trim().toLowerCase();
-    filteredCards = !q
-      ? dayCards
-      : dayCards.filter((c) => c.searchBlob.includes(q));
+    filteredCards = !q ? windowed : windowed.filter((c) => c.searchBlob.includes(q));
 
     filteredCards.forEach((c) => cardsGrid.appendChild(buildCard(c)));
 
-    showHint(
-      filteredCards.length
-        ? `Mostrando ${filteredCards.length} día(s).`
-        : "No hay resultados.",
-      filteredCards.length ? "ok" : "warn"
-    );
+    if (!filteredCards.length) {
+      showHint(`No hay datos en el rango (hoy y ${DAYS_BACK} días atrás) o no coincide la búsqueda.`, "warn");
+    } else {
+      showHint(`Mostrando ${filteredCards.length} día(s): hoy → ${DAYS_BACK} días atrás.`, "ok");
+    }
   }
 
   function openDetail(card) {
     modalTitle.textContent = `Detalle ${card.dayLabel}`;
-    modalSubtitle.textContent = `${card.metrics.length} métricas`;
+    modalSubtitle.textContent = `${card.metrics.length} métricas (columna completa)`;
     modalBody.innerHTML = `
       <div class="table">
         ${card.metrics
