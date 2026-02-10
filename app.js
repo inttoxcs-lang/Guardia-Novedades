@@ -8,13 +8,16 @@
   const DEFAULT_GID = "0";
   const DEFAULT_HEADER_ROW = 1; // 1-based
   const DEFAULT_METRIC_COL = 1; // 1-based
-  const DAYS_BACK = 6; // ancla + 6 atrás = 7 tarjetas
+  const DAYS_BACK = 5; // ancla + 5 atrás = 6 tarjetas
 
   // 🔄 Auto refresh (minutos)
   const REFRESH_MINUTES = 5;
   const REFRESH_MS = REFRESH_MINUTES * 60 * 1000;
 
   // ✅ Rango de legajos en el Sheet: A16:AC25
+  // 0-based en matriz CSV:
+  // Filas 16..25 => índices 15..24
+  // Columnas A..AC => índices 0..28
   const LEGAJO_ROW_START = 16; // 1-based
   const LEGAJO_ROW_END = 25;   // 1-based
   const LEGAJO_COL_START = 1;  // 1-based (A)
@@ -24,7 +27,6 @@
   // DOM
   // =========================
   const cardsGrid = document.getElementById("cardsGrid");
-  if (!cardsGrid) return;
 
   // =========================
   // STATE
@@ -32,7 +34,6 @@
   let dayCards = [];
   let isLoading = false;
   let refreshTimer = null;
-  let abortCtrl = null;
 
   // =========================
   // HELPERS
@@ -70,13 +71,6 @@
     return m ? m[1] : "";
   }
 
-  function extractGid(url) {
-    // acepta ...?gid=123 o ...#gid=123
-    const s = String(url || "");
-    const m = s.match(/[?#&]gid=(\d+)/);
-    return m ? m[1] : "";
-  }
-
   function parseDate(label) {
     const s = String(label ?? "").trim();
     const m = s.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
@@ -96,6 +90,7 @@
     const dd = String(d.getDate()).padStart(2, "0");
     const mm = String(d.getMonth() + 1).padStart(2, "0");
     const yyyy = d.getFullYear();
+    // capitalizar primera letra
     const w = weekday.charAt(0).toUpperCase() + weekday.slice(1);
     return `${w} ${dd}/${mm}/${yyyy}`;
   }
@@ -111,6 +106,7 @@
     return uniq.sort((a, b) => Number(a) - Number(b));
   }
 
+  // Ocultar en tabla:
   function shouldHideInTable(metricName) {
     const n = normalize(metricName);
     if (n === "linea tm") return true;
@@ -119,17 +115,6 @@
     if (n === "inasistencias tm") return true;
     if (n === "inasistencias tt") return true;
     return false;
-  }
-
-  function showStatus(kind, title, detail) {
-    const t = escapeHtml(title || "");
-    const d = escapeHtml(detail || "");
-    cardsGrid.innerHTML = `
-      <div class="status status--${escapeHtml(kind)}" style="padding:14px;border-radius:14px;border:1px solid rgba(255,255,255,.12)">
-        <div style="font-weight:700;margin-bottom:6px">${t}</div>
-        <div style="opacity:.85;line-height:1.35">${d}</div>
-      </div>
-    `;
   }
 
   // =========================
@@ -141,12 +126,9 @@
     let cur = "";
     let inQuotes = false;
 
-    // normalizar newlines
-    const s = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-
-    for (let i = 0; i < s.length; i++) {
-      const ch = s[i];
-      const next = s[i + 1];
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      const next = text[i + 1];
 
       if (ch === '"' && inQuotes && next === '"') {
         cur += '"';
@@ -169,37 +151,28 @@
         cur = "";
         continue;
       }
-      cur += ch;
+      if (ch !== "\r") cur += ch;
     }
 
-    // push final
     curRow.push(cur);
     rows.push(curRow);
 
-    // trim cells + eliminar filas totalmente vacías al final
-    const out = rows.map(r => r.map(c => String(c ?? "").trim()));
-    while (out.length && out[out.length - 1].every(c => c === "")) out.pop();
-    return out;
+    return rows.map(r => r.map(c => String(c ?? "").trim()));
   }
 
   // =========================
-  // FETCH CSV (NO CACHE + TS)
+  // FETCH CSV (NO CACHE)
   // =========================
   async function fetchCsv(spreadsheetId, gid) {
     const url =
       `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}` +
-      `/export?format=csv&gid=${encodeURIComponent(gid)}&_ts=${Date.now()}`;
+      `/export?format=csv&gid=${encodeURIComponent(gid)}`;
 
-    if (abortCtrl) abortCtrl.abort();
-    abortCtrl = new AbortController();
-
-    const res = await fetch(url, { cache: "no-store", signal: abortCtrl.signal });
+    const res = await fetch(url, { cache: "no-store" });
     const text = await res.text();
 
     if (!res.ok || text.trim().startsWith("<")) {
-      throw new Error(
-        "No se pudo leer el Sheet. Verificá que esté público o publicado (File > Share o Publish to web)."
-      );
+      throw new Error("No se pudo leer el Sheet. Asegurate que esté publicado o público.");
     }
     return text;
   }
@@ -213,19 +186,19 @@
     const c0 = LEGAJO_COL_START - 1;
     const c1 = LEGAJO_COL_END - 1;
 
+    // si la fecha está fuera de A..AC, no hay legajos en ese rango
     if (colIndex0 < c0 || colIndex0 > c1) return [];
-    if (r0 < 0 || r1 >= matrix.length) return [];
 
     const out = [];
     for (let r = r0; r <= r1; r++) {
-      const cell = (matrix[r] && matrix[r][colIndex0]) ? matrix[r][colIndex0] : "";
+      const cell = matrix[r]?.[colIndex0] ?? "";
       out.push(...extractLegajos(cell));
     }
     return uniqueSortLegajos(out);
   }
 
   // =========================
-  // BUILD CARDS
+  // BUILD CARDS (KPIs + tabla + legajos desde rango)
   // =========================
   function buildCards(matrix, headerRow1, metricCol1) {
     const h = headerRow1 - 1;
@@ -250,6 +223,7 @@
       let lineaTT = "—";
       const table = [];
 
+      // KPIs TM/TT salen de la “tabla principal” (columna de métricas)
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i] || [];
         const name = String(row[mCol] ?? "").trim();
@@ -265,6 +239,7 @@
         }
       }
 
+      // ✅ Legajos SOLO desde A16:AC25 (por columna de fecha)
       const legajos = getLegajosFromRange(matrix, c);
 
       return { date: d, lineaTM, lineaTT, legajos, table };
@@ -290,26 +265,19 @@
   // RENDER
   // =========================
   function render() {
+    if (!cardsGrid) return;
     cardsGrid.innerHTML = "";
 
     const today = startOfDay(new Date());
-    const list = windowCards(dayCards);
 
-    if (!list.length) {
-      showStatus(
-        "warn",
-        "Sin datos para mostrar",
-        "No encontré columnas con fechas ≤ hoy, o el header no tiene formato dd/mm."
-      );
-      return;
-    }
-
-    list.forEach(card => {
+    windowCards(dayCards).forEach(card => {
       const isToday = card.date.getTime() === today.getTime();
       const hasInasist = card.legajos.length > 0;
 
       const el = document.createElement("article");
-      el.className = `card ${hasInasist ? "card--alert" : "card--ok"} ${isToday ? "card--today" : ""}`;
+      el.className = `card ${hasInasist ? "card--alert" : "card--ok"} ${
+        isToday ? "card--today" : ""
+      }`;
 
       const fechaTxt = formatDateWithWeekday(card.date);
 
@@ -364,22 +332,18 @@
     if (isLoading) return;
     isLoading = true;
 
-    showStatus("info", "Cargando…", "Leyendo Google Sheet y actualizando tarjetas.");
-
     try {
       const id = extractSpreadsheetId(SHEET_URL);
       if (!id) throw new Error("No pude extraer el ID del Sheet desde la URL.");
 
-      const gid = extractGid(SHEET_URL) || DEFAULT_GID;
-
-      const csv = await fetchCsv(id, gid);
+      const csv = await fetchCsv(id, DEFAULT_GID);
       const matrix = parseCsvToMatrix(csv);
 
       dayCards = buildCards(matrix, DEFAULT_HEADER_ROW, DEFAULT_METRIC_COL);
       render();
     } catch (err) {
       console.error(err);
-      showStatus("error", "Error al leer el Sheet", err?.message || String(err));
+      if (cardsGrid) cardsGrid.innerHTML = "";
     } finally {
       isLoading = false;
     }
@@ -399,3 +363,7 @@
   load();
   startAutoRefresh();
 })();
+
+																												
+																												
+																		
