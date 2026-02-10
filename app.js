@@ -8,7 +8,7 @@
   const DEFAULT_GID = "0";
   const DEFAULT_HEADER_ROW = 1; // 1-based
   const DEFAULT_METRIC_COL = 1; // 1-based
-  const DAYS_BACK = 5; // ancla + 5 atrás = 6 tarjetas
+  const DAYS_BACK = 7; // ancla + 7 atrás = 8 tarjetas
 
   // 🔄 Auto refresh (minutos)
   const REFRESH_MINUTES = 5;
